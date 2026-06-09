@@ -1,0 +1,54 @@
+# macOS
+.DS_Store
+
+# Android Studio / IntelliJ
+*.iml
+.idea/*
+!.idea/codeStyles/
+!.idea/codeStyles/**
+!.idea/runConfigurations/
+!.idea/runConfigurations/**
+
+# Gradle / Android builds
+.gradle/
+build/
+*/build/
+.externalNativeBuild/
+.cxx/
+
+# Local machine configuration
+local.properties
+
+# Generated outputs
+captures/
+*.apk
+*.ap_
+*.aab
+*.dex
+output.json
+output-metadata.json
+
+# Logs / profiling
+*.log
+*.hprof
+
+# Signing, secrets, and private config
+*.jks
+*.keystore
+*.p12
+*.pem
+*.key
+.env
+.env.*
+google-services.json
+
+# StrideMap private/local data
+*.db
+*.sqlite
+*.sqlite3
+*.gpx
+*.kml
+*.geojson
+location-traces/
+route-exports/
+private-routes/
