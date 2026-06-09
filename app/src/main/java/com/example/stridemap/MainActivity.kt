@@ -169,7 +169,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun configureOsm() {
-        Configuration.getInstance().userAgentValue = "com.example.stridemap"
+        Configuration.getInstance().userAgentValue = "app.stridemap.personal"
         Configuration.getInstance().osmdroidBasePath = File(cacheDir, "osmdroid")
         Configuration.getInstance().osmdroidTileCache = File(cacheDir, "osmdroid/tiles")
     }

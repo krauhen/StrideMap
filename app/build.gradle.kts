@@ -12,7 +12,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.example.stridemap"
+        applicationId = "app.stridemap.personal"
         minSdk = 36
         targetSdk = 36
         versionCode = 1
@@ -23,6 +23,7 @@ android {
 
     buildTypes {
         release {
+            signingConfig = signingConfigs.getByName("debug")
             optimization {
                 enable = false
             }

@@ -101,7 +101,7 @@ Still pending or not proven:
 
 - Root project: `StrideMap`.
 - Android module: `:app`.
-- Namespace/application id: `com.example.stridemap`.
+- Namespace/source package: `com.example.stridemap`; application id: `app.stridemap.personal`.
 - Android compile SDK / target SDK / min SDK: API 36 in current build configuration.
 - Language/runtime: Kotlin with Java 17 compile options.
 - UI: Jetpack Compose + Material 3.
@@ -808,7 +808,7 @@ Standard local commands:
 ./gradlew :app:testDebugUnitTest --no-daemon
 ./gradlew :app:assembleDebug --no-daemon
 ./gradlew :app:installDebug --no-daemon
-"/Users/use/Library/Android/sdk/platform-tools/adb" shell am start -W -n com.example.stridemap/.MainActivity
+"/Users/use/Library/Android/sdk/platform-tools/adb" shell am start -W -n app.stridemap.personal/com.example.stridemap.MainActivity
 ```
 
 Use 600-second timeouts for normal Gradle test/build shell runs unless a task specifies otherwise.
@@ -842,7 +842,7 @@ Use 600-second timeouts for normal Gradle test/build shell runs unless a task sp
 ## 14. Implementation caveats and naming notes
 
 - Product tab name is `Tracks`; internal enum naming may still say `List`.
-- Package/application id remains `com.example.stridemap`.
+- Source package remains `com.example.stridemap`; install/application id is `app.stridemap.personal`.
 - `DocumentFile` dependency remains from a superseded SAF recovery path; current behavior does not rely on SAF for recovery.
 - `MANAGE_EXTERNAL_STORAGE` is an approved exception only for Settings-driven recovery. It must not become normal capture storage or a Start blocker.
 - Provider polling is movement/settings-based, but current default interval is 1000ms for all movement types.
@@ -850,7 +850,7 @@ Use 600-second timeouts for normal Gradle test/build shell runs unless a task sp
 - A `ForegroundServiceUnavailable` blocker concept exists in design/code context, but current UI may treat background recording readiness as effectively static until failure paths surface errors.
 - Backup/data extraction XML files are template/sample rules unless future documentation explicitly defines backup policy.
 - Emulator/mock success must not be documented as proof of real-world GPS/background reliability.
-- Names such as `StrideMap`, package id `com.example.stridemap`, GPX creator `StrideMap`, extension namespace `https://stridemap.app/gpx/1`, and folder `Documents/StrideMap/Tracks` describe the current implementation. Treat them as current identifiers, not permanent brand commitments. Any product rename must update user-facing labels and storage/GPX identifiers through an explicit migration/compatibility plan.
+- Names such as `StrideMap`, source package `com.example.stridemap`, application id `app.stridemap.personal`, GPX creator `StrideMap`, extension namespace `https://stridemap.app/gpx/1`, and folder `Documents/StrideMap/Tracks` describe the current implementation. Treat them as current identifiers, not permanent brand commitments. Any product rename must update user-facing labels and storage/GPX identifiers through an explicit migration/compatibility plan.
 - Exact button/helper copy may evolve, but must preserve the specified meaning, accessibility, and recording/storage semantics.
 
 ## 15. Maintenance rules for this specification

@@ -1,28 +1,38 @@
 # StrideMap
 
-StrideMap is a personal Android GPS app for recording real reference tracks.
+StrideMap is a personal Android GPS reference-track recorder.
 
-The current v1 app records real GPS captures, saves user-accessible GPX files under `Documents/StrideMap/Tracks/`, lists local tracks, and displays selected/live routes on OpenStreetMap via osmdroid. It is not simulator-first, and it does not include remote sync, accounts, SQLite route storage, or PostgreSQL/API work yet.
+It captures real routes, saves user-accessible GPX files under `Documents/StrideMap/Tracks/`, and shows saved or live tracks on OpenStreetMap through osmdroid. This is a personal-use APK project, not a public app-store release.
 
-## Current v1 shape
+## Screenshots
 
-- Material 3 Compose shell with bottom tabs exactly `Capture`, `Tracks`, and `Map`.
-- Settings opens from a top-corner gear and persists safe defaults with `SharedPreferences`.
-- Movement types are Walk, Run, Bike, Car, and Train; Walk is the default for new captures.
-- One live track is allowed at a time; states are `live`, `stopped`, and `interrupted`.
-- Foreground-service background recording uses `START_NOT_STICKY`; no boot receiver, auto-start, or auto-resume.
-- Production location uses an app-owned `LocationProvider` abstraction backed by Google Play Services `FusedLocationProviderClient`; no `LocationManager` fallback in v1.
-- Saved-point sampling is fixed: first valid point, then at least 1 second and at least 10 meters from the last persisted point.
-- Provider polling interval is movement/settings-based and separate from saved-point sampling; Settings changes apply to future captures only.
-- Public GPX storage uses MediaStore public Documents; the app-private active-session GPX journal is the recovery source of truth.
+<p>
+  <img src="./data/capture.jpg" alt="Capture screen" width="32.5%" />
+  <img src="./data/tracks.jpg" alt="Tracks screen" width="32.5%" />
+  <img src="./data/map.jpg" alt="Map screen" width="32.5%" />
+</p>
 
-## Validation commands
+## Features
+
+- Capture real GPS tracks from the `Capture` tab.
+- Browse saved tracks from the `Tracks` tab.
+- View selected or live routes on the `Map` tab with OpenStreetMap tiles.
+- Export public GPX files to `Documents/StrideMap/Tracks/`.
+- No accounts, cloud sync, remote API, or social sharing in v1.
+
+## Personal APK build
+
+Build a local release APK:
 
 ```bash
-./gradlew :app:testDebugUnitTest --no-daemon
-./gradlew :app:assembleDebug --no-daemon
-./gradlew :app:installDebug --no-daemon
-"/Users/use/Library/Android/sdk/platform-tools/adb" shell am start -W -n com.example.stridemap/.MainActivity
+./gradlew :app:assembleRelease --no-daemon
 ```
 
-Primary source of truth for v1 behavior: `agentic/knowledge/features/init-creating-all-defined-components.md`.
+For personal installs, the release variant uses the local Android debug key. No signing key is stored in this repository.
+
+For a quick local install and launch on a connected device or emulator:
+
+```bash
+"/Users/USER_NAME/Library/Android/sdk/platform-tools/adb" install -r app/build/outputs/apk/release/app-release.apk
+"/Users/USER_NAME/Library/Android/sdk/platform-tools/adb" shell am start -W -n app.stridemap.personal/com.example.stridemap.MainActivity
+```
