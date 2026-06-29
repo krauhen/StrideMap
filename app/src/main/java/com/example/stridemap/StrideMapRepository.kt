@@ -344,6 +344,11 @@ object StrideMapRepository {
         state = state.copy(displayedTrackIds = next, transientMessage = null)
     }
 
+    fun clearDisplayedTracks() {
+        if (state.displayedTrackIds.isEmpty()) return
+        state = state.clearDisplayedTracks().copy(transientMessage = "Cleared map display")
+    }
+
     fun editTrackMessage(track: Track, message: String): Boolean {
         if (track.state == TrackState.Live) return fail("Stop recording before editing this track")
         val ref = state.fileRefsByName[track.fileName] ?: return fail("Could not find ${track.fileName}")
@@ -646,6 +651,8 @@ internal fun AppState.removeTrack(trackId: String): AppState = copy(
     displayedTrackIds = displayedTrackIds - trackId,
     liveTrack = liveTrack?.takeUnless { it.id == trackId },
 )
+
+internal fun AppState.clearDisplayedTracks(): AppState = copy(displayedTrackIds = emptySet())
 
 data class UserSettings(
     private val gpsPollingIntervalsMillis: Map<MovementType, Long>,

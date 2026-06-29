@@ -190,6 +190,22 @@ class AppStateTest {
         assertEquals(listOf(kept), updated.displayedTracks)
     }
 
+    @Test
+    fun clearingDisplayedTracksRemovesOnlyMapSelection() {
+        val displayed = track("displayed.gpx", TrackState.Stopped)
+        val hidden = track("hidden.gpx", TrackState.Stopped)
+        val state = AppState(
+            entries = listOf(ParsedTrackEntry.Valid(displayed), ParsedTrackEntry.Valid(hidden)),
+            displayedTrackIds = setOf(displayed.id),
+        )
+
+        val updated = state.clearDisplayedTracks()
+
+        assertEquals(listOf(ParsedTrackEntry.Valid(displayed), ParsedTrackEntry.Valid(hidden)), updated.entries)
+        assertTrue(updated.displayedTrackIds.isEmpty())
+        assertTrue(updated.displayedTracks.isEmpty())
+    }
+
     private fun track(fileName: String, state: TrackState, message: String = ""): Track = Track(
         id = fileName,
         fileName = fileName,

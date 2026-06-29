@@ -11,6 +11,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
@@ -920,6 +921,7 @@ private fun TrackListScreen(padding: PaddingValues, navigate: (AppTab) -> Unit) 
     var editTrack by remember { mutableStateOf<Track?>(null) }
     var deleteTrack by remember { mutableStateOf<Track?>(null) }
     var deleteMalformed by remember { mutableStateOf<String?>(null) }
+    val displayedCount = appState.displayedTracks.size
 
     previewTrack?.let { track ->
         TrackPreviewSheet(track = track, fileRef = appState.fileRefsByName[track.fileName], onDismiss = { previewTrack = null })
@@ -1000,6 +1002,12 @@ private fun TrackListScreen(padding: PaddingValues, navigate: (AppTab) -> Unit) 
                     }
                 }
             }
+            if (displayedCount > 0) {
+                DisplayedTracksBanner(
+                    displayedCount = displayedCount,
+                    onClear = StrideMapRepository::clearDisplayedTracks,
+                )
+            }
             if (valid.isEmpty() && malformed.isEmpty() && !appState.isScanning) {
                 EmptyListState { navigate(AppTab.Capture) }
             } else {
@@ -1047,6 +1055,31 @@ private fun TrackListScreen(padding: PaddingValues, navigate: (AppTab) -> Unit) 
     }
 }
 
+@Composable
+private fun DisplayedTracksBanner(displayedCount: Int, onClear: () -> Unit) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Icon(MapTabIcon, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+            Text(
+                text = "$displayedCount ${if (displayedCount == 1) "track" else "tracks"} shown on Map",
+                style = MaterialTheme.typography.titleSmall,
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(onClick = onClear) { Text("Clear") }
+        }
+    }
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun TrackRow(track: Track, displayed: Boolean, onClick: () -> Unit, onLongClick: () -> Unit) {
@@ -1061,6 +1094,7 @@ private fun TrackRow(track: Track, displayed: Boolean, onClick: () -> Unit, onLo
     Card(
         Modifier.fillMaxWidth().combinedClickable(onClick = onClick, onLongClick = onLongClick),
         colors = CardDefaults.cardColors(containerColor = containerColor),
+        border = if (displayed) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else null,
     ) {
         ListItem(
             headlineContent = { Text(track.message.ifBlank { "${track.movementType.label} capture" }) },
@@ -1080,10 +1114,15 @@ private fun TrackRow(track: Track, displayed: Boolean, onClick: () -> Unit, onLo
             trailingContent = {
                 Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text(formatDistance(track.distanceMeters), style = MaterialTheme.typography.titleMedium)
+                    if (displayed) AssistChip(
+                        onClick = {},
+                        label = { Text("On Map") },
+                        leadingIcon = { Icon(MapTabIcon, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                    )
                     if (track.state != TrackState.Stopped) AssistChip(onClick = {}, label = { Text(track.state.serialized.replaceFirstChar { it.uppercase() }) })
                 }
             },
-            overlineContent = if (displayed || track.state == TrackState.Live) ({ Text(listOfNotNull(if (displayed) "Displayed" else null, if (track.state == TrackState.Live) "Live" else null).joinToString(" • ")) }) else null,
+            overlineContent = if (displayed || track.state == TrackState.Live) ({ Text(listOfNotNull(if (displayed) "Shown on Map" else null, if (track.state == TrackState.Live) "Live" else null).joinToString(" • ")) }) else null,
         )
     }
 }
