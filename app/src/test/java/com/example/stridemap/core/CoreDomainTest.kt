@@ -53,6 +53,81 @@ class CoreDomainTest {
     }
 
     @Test
+    fun mapPointPresentationComputesDistanceSinceStart() {
+        val points = listOf(
+            LocationPoint(0.0, 0.0, t0),
+            LocationPoint(0.0, 0.001, t0.plusSeconds(10)),
+            LocationPoint(0.0, 0.002, t0.plusSeconds(20)),
+        )
+
+        assertEquals(0.0, MapPointPresentation.distanceSinceStartMeters(points, 0), 0.01)
+        assertEquals(111.2, MapPointPresentation.distanceSinceStartMeters(points, 1), 0.5)
+        assertEquals(222.4, MapPointPresentation.distanceSinceStartMeters(points, 2), 0.5)
+    }
+
+    @Test
+    fun mapPointPresentationComputesDirectionBearingForSavedPointArrows() {
+        val points = listOf(
+            LocationPoint(0.0, 0.0, t0),
+            LocationPoint(0.0, 0.001, t0.plusSeconds(10)),
+            LocationPoint(0.001, 0.001, t0.plusSeconds(20)),
+        )
+
+        assertEquals(90.0, MapPointPresentation.directionBearingDegrees(points, 1)!!, 0.5)
+        assertEquals(0.0, MapPointPresentation.directionBearingDegrees(points, 2)!!, 0.5)
+        assertEquals(null, MapPointPresentation.directionBearingDegrees(listOf(points.first()), 0))
+    }
+
+    @Test
+    fun mapPointPresentationComputesElevationChangeFromStart() {
+        val points = listOf(
+            LocationPoint(0.0, 0.0, t0, elevationMeters = 100.0),
+            LocationPoint(0.0, 0.001, t0.plusSeconds(10), elevationMeters = 112.0),
+            LocationPoint(0.0, 0.002, t0.plusSeconds(20), elevationMeters = 94.0),
+        )
+
+        assertEquals(0.0, MapPointPresentation.elevationChangeFromStartMeters(points, 0)!!, 0.01)
+        assertEquals(12.0, MapPointPresentation.elevationChangeFromStartMeters(points, 1)!!, 0.01)
+        assertEquals(-6.0, MapPointPresentation.elevationChangeFromStartMeters(points, 2)!!, 0.01)
+        assertEquals(null, MapPointPresentation.elevationChangeFromStartMeters(listOf(points.first().copy(elevationMeters = null), points[1]), 1))
+    }
+
+    @Test
+    fun mapPointPresentationConvertsPointSpeedToKilometersPerHour() {
+        val point = LocationPoint(0.0, 0.0, t0, speedMetersPerSecond = 2.5)
+
+        assertEquals(9.0, MapPointPresentation.speedKilometersPerHour(point)!!, 0.01)
+        assertEquals(null, MapPointPresentation.speedKilometersPerHour(point.copy(speedMetersPerSecond = null)))
+    }
+
+    @Test
+    fun elevationSummarySumsAscentDescentAndAltitudeRange() {
+        val points = listOf(
+            LocationPoint(0.0, 0.0, t0, elevationMeters = 100.0),
+            LocationPoint(0.0, 0.001, t0.plusSeconds(10), elevationMeters = 112.0),
+            LocationPoint(0.0, 0.002, t0.plusSeconds(20), elevationMeters = 105.0),
+            LocationPoint(0.0, 0.003, t0.plusSeconds(30), elevationMeters = 130.0),
+        )
+
+        val summary = ElevationSummaryCalculator.summary(points)!!
+
+        assertEquals(37.0, summary.totalAscentMeters, 0.01)
+        assertEquals(7.0, summary.totalDescentMeters, 0.01)
+        assertEquals(100.0, summary.minElevationMeters, 0.01)
+        assertEquals(130.0, summary.maxElevationMeters, 0.01)
+    }
+
+    @Test
+    fun elevationSummaryRequiresAtLeastTwoElevatedPoints() {
+        val points = listOf(
+            LocationPoint(0.0, 0.0, t0, elevationMeters = 100.0),
+            LocationPoint(0.0, 0.001, t0.plusSeconds(10)),
+        )
+
+        assertEquals(null, ElevationSummaryCalculator.summary(points))
+    }
+
+    @Test
     fun liveElapsedTimeUsesCaptureStartEvenWhenOnlyOnePointIsSaved() {
         val track = Track(
             id = "car-live.gpx",

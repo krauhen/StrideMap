@@ -2,6 +2,13 @@ package com.example.stridemap
 
 import android.Manifest
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.Canvas as AndroidCanvas
+import android.graphics.Paint
+import android.graphics.Path as AndroidPath
+import android.graphics.RectF
+import android.graphics.drawable.BitmapDrawable
+import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Bundle
@@ -11,10 +18,13 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -37,6 +47,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
@@ -77,16 +88,20 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.path
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.style.TextOverflow
@@ -94,8 +109,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import com.example.stridemap.core.ElevationSummaryCalculator
 import com.example.stridemap.core.MapOverlayText
+import com.example.stridemap.core.MapPointPresentation
 import com.example.stridemap.core.MovementType
+import com.example.stridemap.core.LocationPoint
 import com.example.stridemap.core.ParsedTrackEntry
 import com.example.stridemap.core.Track
 import com.example.stridemap.core.TrackOrdering
@@ -106,6 +124,9 @@ import com.example.stridemap.session.SetupBlocker
 import com.example.stridemap.storage.DirectTrackRecoveryLocation
 import com.example.stridemap.storage.TrackFileRef
 import org.osmdroid.config.Configuration
+import org.osmdroid.events.MapListener
+import org.osmdroid.events.ScrollEvent
+import org.osmdroid.events.ZoomEvent
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.BoundingBox
 import org.osmdroid.util.GeoPoint
@@ -1084,6 +1105,7 @@ private fun DisplayedTracksBanner(displayedCount: Int, onClear: () -> Unit) {
 @Composable
 private fun TrackRow(track: Track, displayed: Boolean, onClick: () -> Unit, onLongClick: () -> Unit) {
     val displayDurationSeconds = rememberDisplayDurationSeconds(track)
+    val elevationSummary = remember(track.points) { ElevationSummaryCalculator.summary(track.points) }
     val movementColor = movementTypeColor(track.movementType)
     val movementContentColor = movementTypeOnColor(track.movementType)
     val containerColor = when {
@@ -1098,7 +1120,10 @@ private fun TrackRow(track: Track, displayed: Boolean, onClick: () -> Unit, onLo
     ) {
         ListItem(
             headlineContent = { Text(track.message.ifBlank { "${track.movementType.label} capture" }) },
-            supportingContent = { Text("${formatInstant(track.createdAt)} • ${formatDuration(displayDurationSeconds)} • ${track.points.size} points${if (track.state == TrackState.Interrupted) " • Capture ended unexpectedly" else ""}") },
+            supportingContent = {
+                val elevationText = elevationSummary?.let { " • ${formatElevationSummary(it.totalAscentMeters, it.totalDescentMeters)}" }.orEmpty()
+                Text("${formatInstant(track.createdAt)} • ${formatDuration(displayDurationSeconds)} • ${track.points.size} points$elevationText${if (track.state == TrackState.Interrupted) " • Capture ended unexpectedly" else ""}")
+            },
             leadingContent = {
                 AssistChip(
                     onClick = {},
@@ -1208,6 +1233,7 @@ private fun MalformedActionsMenu(fileName: String, deletable: Boolean, expanded:
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun TrackPreviewSheet(track: Track, fileRef: TrackFileRef?, onDismiss: () -> Unit) {
+    val elevationSummary = remember(track.points) { ElevationSummaryCalculator.summary(track.points) }
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(Modifier.fillMaxWidth().padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(track.message.ifBlank { "${track.movementType.label} capture" }, style = MaterialTheme.typography.headlineSmall)
@@ -1217,6 +1243,11 @@ private fun TrackPreviewSheet(track: Track, fileRef: TrackFileRef?, onDismiss: (
             PreviewMetadataRow("Duration", formatDuration(rememberDisplayDurationSeconds(track)))
             PreviewMetadataRow("Distance", formatDistance(track.distanceMeters))
             PreviewMetadataRow("Points", track.points.size.toString())
+            elevationSummary?.let {
+                PreviewMetadataRow("Total up", formatElevation(it.totalAscentMeters))
+                PreviewMetadataRow("Total down", formatElevation(it.totalDescentMeters))
+                PreviewMetadataRow("Altitude", "${formatElevation(it.minElevationMeters)}–${formatElevation(it.maxElevationMeters)}")
+            }
             PreviewMetadataRow("File", track.fileName)
             fileRef?.let { PreviewMetadataRow("Storage", storageReferenceLabel(it)) }
             Spacer(Modifier.height(8.dp))
@@ -1280,31 +1311,61 @@ private fun TrackMapScreen(padding: PaddingValues, onNavigate: (AppTab) -> Unit)
     var followLive by rememberSaveable { mutableStateOf(appState.settings.followLiveByDefault) }
     val colorAssignments = remember { mutableStateMapOf<String, Int>() }
     var routeInfoTrackId by remember { mutableStateOf<String?>(null) }
+    var selectedPoint by remember { mutableStateOf<SelectedMapPoint?>(null) }
+    var elevationExpanded by rememberSaveable { mutableStateOf(false) }
+    var elevationMetricName by rememberSaveable { mutableStateOf(ElevationPanelMetric.Elevation.name) }
+    val elevationMetric = runCatching { ElevationPanelMetric.valueOf(elevationMetricName) }.getOrDefault(ElevationPanelMetric.Elevation)
     val routes = tracks.map { track ->
         val color = if (track.state == TrackState.Live) LiveRouteColor.toArgb() else colorAssignments.getOrPut(track.id) { savedRouteColor(colorAssignments.size).toArgb() }
         MapRoute(track = track, routeColor = color, casingColor = Color(0xCC101412).toArgb())
     }
     val routeInfo = routes.firstOrNull { it.track.id == routeInfoTrackId }
+    val selectedPointRoute = selectedPoint?.let { point -> routes.firstOrNull { it.track.id == point.trackId } }
+    val elevationRoute = routeInfo ?: selectedPointRoute ?: routes.singleOrNull()
     Box(Modifier.fillMaxSize().padding(padding)) {
         OsmRouteMap(
             routes = routes,
             followLive = followLive,
             showSavedPointDots = appState.settings.showSavedPointDots,
             routeLineWidth = appState.settings.routeLineWidth,
-            onGesture = { followLive = false; routeInfoTrackId = null },
-            onRouteSelected = { routeInfoTrackId = it },
+            selectedPoint = selectedPoint,
+            onGesture = { followLive = false; routeInfoTrackId = null; selectedPoint = null },
+            onRouteSelected = { routeInfoTrackId = it; selectedPoint = null },
+            onPointSelected = { trackId, pointIndex -> selectedPoint = SelectedMapPoint(trackId, pointIndex); routeInfoTrackId = trackId },
         )
         if (routes.isEmpty()) {
             EmptyDisplayedTracksHint(onOpenTracks = { onNavigate(AppTab.List) }, modifier = Modifier.align(Alignment.BottomCenter).padding(16.dp))
         } else if (liveTrack?.points?.isEmpty() == true && routes.all { it.track.points.isEmpty() }) {
             LiveWaitingMapHint(modifier = Modifier.align(Alignment.BottomCenter).padding(16.dp))
         }
-        routeInfo?.let {
-            TrackInfoCard(
-                route = it,
-                onClose = { routeInfoTrackId = null },
+        selectedPointRoute?.let { route ->
+            selectedPoint?.let { point ->
+                PointTooltip(
+                    route = route,
+                    pointIndex = point.pointIndex,
+                    onClose = { selectedPoint = null },
+                    modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(16.dp),
+                )
+            }
+        }
+        if (routes.isNotEmpty()) {
+            Column(
                 modifier = Modifier.align(Alignment.BottomCenter).padding(16.dp),
-            )
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                routeInfo?.let {
+                    TrackInfoCard(route = it, onClose = { routeInfoTrackId = null })
+                }
+                ElevationProfilePanel(
+                    route = elevationRoute,
+                    selectedPoint = selectedPoint?.takeIf { point -> point.trackId == elevationRoute?.track?.id },
+                    metric = elevationMetric,
+                    expanded = elevationExpanded,
+                    onToggle = { elevationExpanded = !elevationExpanded },
+                    onMetricSelected = { metric -> elevationMetricName = metric.name; elevationExpanded = true },
+                    onPointSelected = { pointIndex -> elevationRoute?.let { route -> selectedPoint = SelectedMapPoint(route.track.id, pointIndex); routeInfoTrackId = route.track.id } },
+                )
+            }
         }
         if (liveTrack != null && !followLive) {
             ExtendedFloatingActionButton(onClick = { followLive = true }, modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp), text = { Text("Follow live location") }, icon = { Icon(MapTabIcon, contentDescription = null) })
@@ -1314,6 +1375,33 @@ private fun TrackMapScreen(padding: PaddingValues, onNavigate: (AppTab) -> Unit)
 
 private data class MapRoute(val track: Track, val routeColor: Int, val casingColor: Int)
 
+private data class SelectedMapPoint(val trackId: String, val pointIndex: Int)
+
+private enum class ElevationPanelMetric(val label: String) {
+    Elevation("Elevation"),
+    HeightChange("Height change"),
+    Speed("Speed"),
+}
+
+private enum class DirectionPointDensity { Dots, Sparse, All }
+
+private data class MapRenderKey(
+    val routeKeys: List<RouteRenderKey>,
+    val followLive: Boolean,
+    val showSavedPointDots: Boolean,
+    val directionPointDensity: DirectionPointDensity,
+    val routeLineWidth: Float,
+    val selectedPoint: SelectedMapPoint?,
+)
+
+private data class RouteRenderKey(
+    val id: String,
+    val pointCount: Int,
+    val updatedAtEpochMillis: Long,
+    val state: TrackState,
+    val routeColor: Int,
+)
+
 private val LiveRouteColor = Color(0xFF00C853)
 
 private fun savedRouteColor(index: Int): Color = Color.hsv(
@@ -1321,6 +1409,25 @@ private fun savedRouteColor(index: Int): Color = Color.hsv(
     saturation = 0.72f,
     value = 0.78f,
 )
+
+private fun directionPointDensityForMap(mapView: MapView, routes: List<MapRoute>): DirectionPointDensity = when {
+    mapView.zoomLevelDouble >= 18.0 -> DirectionPointDensity.All
+    displayedTrackFullyVisible(mapView, routes) -> DirectionPointDensity.Dots
+    else -> DirectionPointDensity.Sparse
+}
+
+private fun displayedTrackFullyVisible(mapView: MapView, routes: List<MapRoute>): Boolean {
+    if (routes.isEmpty() || mapView.width <= 0 || mapView.height <= 0) return true
+    val points = routes.flatMap { it.track.points }
+    if (points.isEmpty()) return true
+    val boundingBox = mapView.boundingBox ?: return true
+    return points.all { point ->
+        point.latitude <= boundingBox.latNorth &&
+            point.latitude >= boundingBox.latSouth &&
+            point.longitude <= boundingBox.lonEast &&
+            point.longitude >= boundingBox.lonWest
+    }
+}
 
 @Composable
 private fun EmptyDisplayedTracksHint(onOpenTracks: () -> Unit, modifier: Modifier = Modifier) {
@@ -1344,9 +1451,19 @@ private fun LiveWaitingMapHint(modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun OsmRouteMap(routes: List<MapRoute>, followLive: Boolean, showSavedPointDots: Boolean, routeLineWidth: Float, onGesture: () -> Unit, onRouteSelected: (String) -> Unit) {
+private fun OsmRouteMap(
+    routes: List<MapRoute>,
+    followLive: Boolean,
+    showSavedPointDots: Boolean,
+    routeLineWidth: Float,
+    selectedPoint: SelectedMapPoint?,
+    onGesture: () -> Unit,
+    onRouteSelected: (String) -> Unit,
+    onPointSelected: (String, Int) -> Unit,
+) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
+    val currentRoutes by rememberUpdatedState(routes)
     val mapView = remember {
         MapView(context).apply {
             setTileSource(TileSourceFactory.MAPNIK)
@@ -1357,7 +1474,12 @@ private fun OsmRouteMap(routes: List<MapRoute>, followLive: Boolean, showSavedPo
     }
     var initialViewportApplied by remember { mutableStateOf(false) }
     var lastLiveFollowKey by remember { mutableStateOf<String?>(null) }
+    var lastRenderKey by remember { mutableStateOf<MapRenderKey?>(null) }
+    var directionPointDensity by remember { mutableStateOf(DirectionPointDensity.Dots) }
     DisposableEffect(lifecycleOwner, mapView) {
+        fun refreshDirectionDensity() {
+            mapView.post { directionPointDensity = directionPointDensityForMap(mapView, currentRoutes) }
+        }
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_RESUME -> mapView.onResume()
@@ -1365,21 +1487,57 @@ private fun OsmRouteMap(routes: List<MapRoute>, followLive: Boolean, showSavedPo
                 else -> Unit
             }
         }
+        val mapListener = object : MapListener {
+            override fun onScroll(event: ScrollEvent?): Boolean {
+                refreshDirectionDensity()
+                return false
+            }
+
+            override fun onZoom(event: ZoomEvent?): Boolean {
+                refreshDirectionDensity()
+                return false
+            }
+        }
         lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer); mapView.onDetach() }
+        mapView.addMapListener(mapListener)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer); mapView.removeMapListener(mapListener); mapView.onDetach() }
     }
     AndroidView(factory = { mapView }, modifier = Modifier.fillMaxSize(), update = { view ->
         view.setOnTouchListener { _, _ -> onGesture(); false }
+        val renderDirectionPointDensity = directionPointDensityForMap(view, routes).also { directionPointDensity = it }
         val liveFollowKey = routes.firstOrNull { it.track.state == TrackState.Live }?.let { routeViewportKey(it.track, followLive) }
         val updateInitialViewport = !initialViewportApplied
         val updateLiveViewport = followLive && liveFollowKey != null && liveFollowKey != lastLiveFollowKey
-        renderTracks(view, routes, followLive, updateInitialViewport, updateLiveViewport, showSavedPointDots, routeLineWidth, onRouteSelected)
+        val renderKey = MapRenderKey(
+            routeKeys = routes.map { route -> RouteRenderKey(route.track.id, route.track.points.size, route.track.updatedAt.toEpochMilli(), route.track.state, route.routeColor) },
+            followLive = followLive,
+            showSavedPointDots = showSavedPointDots,
+            directionPointDensity = renderDirectionPointDensity,
+            routeLineWidth = routeLineWidth,
+            selectedPoint = selectedPoint,
+        )
+        if (renderKey != lastRenderKey || updateInitialViewport || updateLiveViewport) {
+            renderTracks(view, routes, followLive, updateInitialViewport, updateLiveViewport, showSavedPointDots, renderDirectionPointDensity, routeLineWidth, selectedPoint, onRouteSelected, onPointSelected)
+            lastRenderKey = renderKey
+        }
         if (updateInitialViewport && view.width > 0 && view.height > 0) initialViewportApplied = true
         if (updateLiveViewport && view.width > 0 && view.height > 0) lastLiveFollowKey = liveFollowKey
     })
 }
 
-private fun renderTracks(mapView: MapView, routes: List<MapRoute>, followLive: Boolean, updateInitialViewport: Boolean, updateLiveViewport: Boolean, showSavedPointDots: Boolean, routeLineWidth: Float, onRouteSelected: (String) -> Unit) {
+private fun renderTracks(
+    mapView: MapView,
+    routes: List<MapRoute>,
+    followLive: Boolean,
+    updateInitialViewport: Boolean,
+    updateLiveViewport: Boolean,
+    showSavedPointDots: Boolean,
+    directionPointDensity: DirectionPointDensity,
+    routeLineWidth: Float,
+    selectedPoint: SelectedMapPoint?,
+    onRouteSelected: (String) -> Unit,
+    onPointSelected: (String, Int) -> Unit,
+) {
     mapView.overlays.clear()
     val allPoints = routes.flatMap { it.track.points.map { point -> GeoPoint(point.latitude, point.longitude) } }
     routes.forEach { route ->
@@ -1396,14 +1554,26 @@ private fun renderTracks(mapView: MapView, routes: List<MapRoute>, followLive: B
         }
         if (points.size == 1) {
             val label = if (track.state == TrackState.Live) "Latest live point" else "Start"
-            mapView.overlays.add(marker(mapView, points.single(), label, "Only saved point", MarkerKind.Latest, route.routeColor) { onRouteSelected(track.id) })
+            mapView.overlays.add(marker(mapView, points.single(), label, "Only saved point", MarkerKind.Latest, route.routeColor, selected = selectedPoint?.trackId == track.id && selectedPoint.pointIndex == 0) { onPointSelected(track.id, 0) })
         } else if (points.size > 1) {
-            if (showSavedPointDots) {
+            if (showSavedPointDots || selectedPoint?.trackId == track.id) {
                 points.drop(1).dropLast(1).forEachIndexed { index, point ->
-                    mapView.overlays.add(marker(mapView, point, "Saved point ${index + 2}", "Intermediate saved point", MarkerKind.SavedPoint, route.routeColor) { onRouteSelected(track.id) })
+                    val pointIndex = index + 1
+                    val selected = selectedPoint?.trackId == track.id && selectedPoint.pointIndex == pointIndex
+                    val visibleByZoom = showSavedPointDots
+                    if (!selected && !visibleByZoom) return@forEachIndexed
+                    val bearing = MapPointPresentation.directionBearingDegrees(track.points, pointIndex)
+                    val markerKind = when (directionPointDensity) {
+                        DirectionPointDensity.Dots -> MarkerKind.SavedDot
+                        DirectionPointDensity.Sparse -> if (pointIndex % 6 == 0 || selected) MarkerKind.SavedPoint else null
+                        DirectionPointDensity.All -> MarkerKind.SavedPoint
+                    }
+                    if (markerKind != null && (markerKind == MarkerKind.SavedDot || bearing != null || selected)) {
+                        mapView.overlays.add(marker(mapView, point, "Saved point ${pointIndex + 1}", "Intermediate saved point", markerKind, route.routeColor, bearing, selected) { onPointSelected(track.id, pointIndex) })
+                    }
                 }
             }
-            mapView.overlays.add(marker(mapView, points.first(), "Start", "First saved point", MarkerKind.Start, route.routeColor) { onRouteSelected(track.id) })
+            mapView.overlays.add(marker(mapView, points.first(), "Start", "First saved point", MarkerKind.Start, route.routeColor, selected = selectedPoint?.trackId == track.id && selectedPoint.pointIndex == 0) { onPointSelected(track.id, 0) })
             mapView.overlays.add(
                 marker(
                     mapView,
@@ -1412,7 +1582,8 @@ private fun renderTracks(mapView: MapView, routes: List<MapRoute>, followLive: B
                     if (track.state == TrackState.Live) "Most recent saved point" else "Final saved point",
                     if (track.state == TrackState.Live) MarkerKind.Latest else MarkerKind.End,
                     route.routeColor,
-                ) { onRouteSelected(track.id) },
+                    selected = selectedPoint?.trackId == track.id && selectedPoint.pointIndex == points.lastIndex,
+                ) { onPointSelected(track.id, points.lastIndex) },
             )
         }
     }
@@ -1437,10 +1608,12 @@ private fun routeViewportKey(track: Track, followLive: Boolean): String {
 
 private fun applyRouteViewport(mapView: MapView, points: List<GeoPoint>, centerOnLatest: Boolean) {
     if (mapView.width <= 0 || mapView.height <= 0) return
+    mapView.minZoomLevel = 3.0
     val targetCenter = if (centerOnLatest) points.last() else points.first()
     if (points.size == 1) {
         mapView.controller.setZoom(17.0)
         mapView.controller.setCenter(targetCenter)
+        if (!centerOnLatest) mapView.minZoomLevel = mapView.zoomLevelDouble
         return
     }
     val north = points.maxOf { it.latitude }
@@ -1450,47 +1623,357 @@ private fun applyRouteViewport(mapView: MapView, points: List<GeoPoint>, centerO
     if (abs(north - south) < 0.000001 && abs(east - west) < 0.000001) {
         mapView.controller.setZoom(17.0)
         mapView.controller.setCenter(targetCenter)
+        if (!centerOnLatest) mapView.minZoomLevel = mapView.zoomLevelDouble
         return
     }
     runCatching {
         mapView.zoomToBoundingBox(BoundingBox(north, east, south, west), false, 96)
         if (centerOnLatest) mapView.controller.setCenter(points.last())
+        if (!centerOnLatest) mapView.minZoomLevel = mapView.zoomLevelDouble
     }.onFailure {
         mapView.controller.setZoom(17.0)
         mapView.controller.setCenter(targetCenter)
+        if (!centerOnLatest) mapView.minZoomLevel = mapView.zoomLevelDouble
     }
 }
 
-private fun marker(mapView: MapView, point: GeoPoint, label: String, detail: String, kind: MarkerKind, movementColor: Int, onClick: () -> Unit): Marker = Marker(mapView).apply {
+private fun marker(mapView: MapView, point: GeoPoint, label: String, detail: String, kind: MarkerKind, movementColor: Int, bearingDegrees: Double? = null, selected: Boolean = false, onClick: () -> Unit): Marker = Marker(mapView).apply {
     position = point
     title = label
     snippet = detail
-    icon = markerDrawable(mapView, kind, movementColor)
-    setAnchor(Marker.ANCHOR_CENTER, if (kind == MarkerKind.SavedPoint || kind == MarkerKind.Latest) Marker.ANCHOR_CENTER else Marker.ANCHOR_BOTTOM)
+    icon = markerDrawable(mapView, kind, movementColor, bearingDegrees, selected)
+    setAnchor(Marker.ANCHOR_CENTER, if (kind == MarkerKind.SavedPoint || kind == MarkerKind.SavedDot || kind == MarkerKind.Latest) Marker.ANCHOR_CENTER else Marker.ANCHOR_BOTTOM)
     setOnMarkerClickListener { _, _ -> onClick(); true }
 }
 
-private enum class MarkerKind { SavedPoint, Start, End, Latest }
+private enum class MarkerKind { SavedPoint, SavedDot, Start, End, Latest }
 
-private fun markerDrawable(mapView: MapView, kind: MarkerKind, movementColor: Int): GradientDrawable {
+private fun markerDrawable(mapView: MapView, kind: MarkerKind, movementColor: Int, bearingDegrees: Double?, selected: Boolean): Drawable {
     val density = mapView.context.resources.displayMetrics.density
     fun px(dp: Float): Int = (dp * density).roundToInt()
+    if (kind == MarkerKind.SavedPoint) return arrowMarkerDrawable(mapView, movementColor, bearingDegrees ?: 0.0, selected)
+    if (kind == MarkerKind.SavedDot) return savedPointDotDrawable(mapView, movementColor, selected)
+    if (kind == MarkerKind.Start || kind == MarkerKind.End) return endpointMarkerDrawable(mapView, kind, movementColor, selected)
     val (shape, sizeDp, fill, stroke) = when (kind) {
-        MarkerKind.SavedPoint -> MarkerStyle(GradientDrawable.OVAL, 6f, 0xFFFFFFFF.toInt(), movementColor)
-        MarkerKind.Start -> MarkerStyle(GradientDrawable.OVAL, 18f, movementColor, 0xFF101412.toInt())
-        MarkerKind.End -> MarkerStyle(GradientDrawable.RECTANGLE, 18f, movementColor, 0xFFFFFFFF.toInt())
-        MarkerKind.Latest -> MarkerStyle(GradientDrawable.OVAL, 22f, 0xFFFFFFFF.toInt(), movementColor)
+        MarkerKind.Latest -> MarkerStyle(GradientDrawable.OVAL, if (selected) 32f else 22f, if (selected) 0xFFFFD166.toInt() else 0xFFFFFFFF.toInt(), movementColor)
+        else -> error("Endpoint markers are drawn separately")
     }
     return GradientDrawable().apply {
         this.shape = shape
         setColor(fill)
-        setStroke(px(if (kind == MarkerKind.SavedPoint) 1f else 3f), stroke)
+        setStroke(px(3f), stroke)
         setSize(px(sizeDp), px(sizeDp))
-        if (kind == MarkerKind.End) cornerRadius = px(3f).toFloat()
     }
 }
 
 private data class MarkerStyle(val shape: Int, val sizeDp: Float, val fill: Int, val stroke: Int)
+
+private fun arrowMarkerDrawable(mapView: MapView, movementColor: Int, bearingDegrees: Double, selected: Boolean): Drawable {
+    val density = mapView.context.resources.displayMetrics.density
+    fun px(dp: Float): Int = (dp * density).roundToInt()
+    val size = px(40f)
+    val visualSize = px(if (selected) 26f else 16f).toFloat()
+    val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+    val canvas = AndroidCanvas(bitmap)
+    val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = if (selected) 0xFFFFD166.toInt() else movementColor; style = Paint.Style.FILL }
+    val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF101412.toInt(); style = Paint.Style.STROKE; strokeWidth = px(if (selected) 2.5f else 1.5f).toFloat(); strokeJoin = Paint.Join.ROUND }
+    val left = (size - visualSize) / 2f
+    val top = (size - visualSize) / 2f
+    val right = left + visualSize
+    val bottom = top + visualSize
+    val path = AndroidPath().apply {
+        moveTo(size / 2f, top)
+        lineTo(right, bottom)
+        lineTo(left, bottom)
+        close()
+    }
+    canvas.rotate(bearingDegrees.toFloat(), size / 2f, size / 2f)
+    canvas.drawPath(path, fill)
+    canvas.drawPath(path, stroke)
+    return BitmapDrawable(mapView.context.resources, bitmap)
+}
+
+private fun savedPointDotDrawable(mapView: MapView, movementColor: Int, selected: Boolean): Drawable {
+    val density = mapView.context.resources.displayMetrics.density
+    fun px(dp: Float): Int = (dp * density).roundToInt()
+    val size = px(40f)
+    val radius = px(if (selected) 7f else 4.5f).toFloat()
+    val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+    val canvas = AndroidCanvas(bitmap)
+    val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = if (selected) 0xFFFFD166.toInt() else movementColor; style = Paint.Style.FILL }
+    val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF101412.toInt(); style = Paint.Style.STROKE; strokeWidth = px(if (selected) 2.5f else 1.5f).toFloat() }
+    canvas.drawCircle(size / 2f, size / 2f, radius, fill)
+    canvas.drawCircle(size / 2f, size / 2f, radius, stroke)
+    return BitmapDrawable(mapView.context.resources, bitmap)
+}
+
+private fun endpointMarkerDrawable(mapView: MapView, kind: MarkerKind, movementColor: Int, selected: Boolean): Drawable {
+    val density = mapView.context.resources.displayMetrics.density
+    fun px(dp: Float): Int = (dp * density).roundToInt()
+    val size = px(if (selected) 34f else 26f)
+    val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+    val canvas = AndroidCanvas(bitmap)
+    val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = if (selected) 0xFFFFD166.toInt() else movementColor; style = Paint.Style.FILL }
+    val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF101412.toInt(); style = Paint.Style.STROKE; strokeWidth = px(2.5f).toFloat() }
+    val glyph = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFFFFFF.toInt(); style = Paint.Style.FILL }
+    val bounds = RectF(px(2f).toFloat(), px(2f).toFloat(), size - px(2f).toFloat(), size - px(2f).toFloat())
+    if (kind == MarkerKind.Start) {
+        canvas.drawOval(bounds, fill)
+        canvas.drawOval(bounds, stroke)
+        AndroidPath().apply {
+            moveTo(size * 0.42f, size * 0.32f)
+            lineTo(size * 0.42f, size * 0.68f)
+            lineTo(size * 0.70f, size * 0.50f)
+            close()
+            canvas.drawPath(this, glyph)
+        }
+    } else {
+        canvas.drawRoundRect(bounds, px(6f).toFloat(), px(6f).toFloat(), fill)
+        canvas.drawRoundRect(bounds, px(6f).toFloat(), px(6f).toFloat(), stroke)
+        val barWidth = px(4f).toFloat()
+        val top = size * 0.32f
+        val bottom = size * 0.68f
+        canvas.drawRoundRect(RectF(size * 0.38f - barWidth / 2f, top, size * 0.38f + barWidth / 2f, bottom), px(1f).toFloat(), px(1f).toFloat(), glyph)
+        canvas.drawRoundRect(RectF(size * 0.62f - barWidth / 2f, top, size * 0.62f + barWidth / 2f, bottom), px(1f).toFloat(), px(1f).toFloat(), glyph)
+    }
+    return BitmapDrawable(mapView.context.resources, bitmap)
+}
+
+@Composable
+private fun PointTooltip(route: MapRoute, pointIndex: Int, onClose: () -> Unit, modifier: Modifier = Modifier) {
+    val track = route.track
+    val point = track.points.getOrNull(pointIndex) ?: return
+    val distance = MapPointPresentation.distanceSinceStartMeters(track.points, pointIndex)
+    val heightChange = MapPointPresentation.elevationChangeFromStartMeters(track.points, pointIndex)
+    Card(modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f))) {
+        Row(
+            modifier = Modifier.padding(12.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Surface(modifier = Modifier.size(12.dp), shape = CircleShape, color = Color(route.routeColor), content = {})
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text("Point ${pointIndex + 1} of ${track.points.size}", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(formatInstant(point.timestamp), style = MaterialTheme.typography.bodyMedium)
+                Text("${formatDistance(distance)} from start", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(point.elevationMeters?.let { "Elevation ${formatElevation(it)}" } ?: "Elevation unavailable", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                heightChange?.let { Text("Height change ${formatSignedElevation(it)}", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            }
+            IconButton(onClick = onClose) { Text("×") }
+        }
+    }
+}
+
+@Composable
+private fun ElevationProfilePanel(
+    route: MapRoute?,
+    selectedPoint: SelectedMapPoint?,
+    metric: ElevationPanelMetric,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    onMetricSelected: (ElevationPanelMetric) -> Unit,
+    onPointSelected: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val panelHeight by animateDpAsState(if (expanded) 190.dp else 44.dp, label = "elevationProfileHeight")
+    var dropdownExpanded by remember { mutableStateOf(false) }
+    Card(
+        modifier = modifier.fillMaxWidth().height(panelHeight),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f)),
+    ) {
+        Column(Modifier.fillMaxSize()) {
+            Row(
+                modifier = Modifier.fillMaxWidth().height(44.dp).padding(horizontal = 14.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column {
+                    Surface(modifier = Modifier.width(42.dp).height(4.dp).clickable(onClick = onToggle), shape = RoundedCornerShape(100), color = MaterialTheme.colorScheme.outline.copy(alpha = 0.65f), content = {})
+                    Spacer(Modifier.height(6.dp))
+                    Box {
+                        Text("${metric.label} ▼", modifier = Modifier.clickable { dropdownExpanded = true }, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        DropdownMenu(expanded = dropdownExpanded, onDismissRequest = { dropdownExpanded = false }) {
+                            ElevationPanelMetric.entries.forEach { option ->
+                                DropdownMenuItem(
+                                    text = { Text(option.label) },
+                                    onClick = { dropdownExpanded = false; onMetricSelected(option) },
+                                )
+                            }
+                        }
+                    }
+                }
+                Text(if (expanded) "Hide" else "Show", modifier = Modifier.clickable(onClick = onToggle), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+            }
+            if (expanded) {
+                ElevationProfileContent(route = route, selectedPoint = selectedPoint, metric = metric, onPointSelected = onPointSelected, modifier = Modifier.fillMaxSize().padding(start = 8.dp, end = 14.dp, bottom = 12.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun ElevationProfileContent(route: MapRoute?, selectedPoint: SelectedMapPoint?, metric: ElevationPanelMetric, onPointSelected: (Int) -> Unit, modifier: Modifier = Modifier) {
+    val track = route?.track
+    val elevationPoints = track?.points.orEmpty().mapIndexedNotNull { index, point -> point.elevationMeters?.let { index to it } }
+    val speedPoints = track?.points.orEmpty().mapIndexedNotNull { index, point -> MapPointPresentation.speedKilometersPerHour(point)?.let { index to it } }
+    if (track == null) {
+        Box(modifier, contentAlignment = Alignment.Center) { Text("Select a track for ${metric.label.lowercase()}", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        return
+    }
+    val hasEnoughData = when (metric) {
+        ElevationPanelMetric.Elevation,
+        ElevationPanelMetric.HeightChange -> elevationPoints.size >= 2
+        ElevationPanelMetric.Speed -> speedPoints.size >= 2
+    }
+    if (!hasEnoughData) {
+        Box(modifier, contentAlignment = Alignment.Center) { Text("${metric.label} unavailable", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        return
+    }
+
+    val lineColor = Color(route.routeColor)
+    val guideColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.28f)
+    val fillColor = lineColor.copy(alpha = 0.18f)
+    val riseColor = Color(0xFF66D17A)
+    val dropColor = Color(0xFFE05A5A)
+    val minElevation = elevationPoints.minOf { it.second }
+    val maxElevation = elevationPoints.maxOf { it.second }
+    val range = (maxElevation - minElevation).takeIf { it > 0.01 } ?: 1.0
+    val startElevation = track.points.firstOrNull()?.elevationMeters
+    val changePoints = if (startElevation == null) emptyList() else elevationPoints.map { (index, elevation) -> index to (elevation - startElevation) }
+    val maxAbsChange = changePoints.maxOfOrNull { abs(it.second) }?.takeIf { it > 0.01 } ?: 1.0
+    val maxSpeed = speedPoints.maxOfOrNull { it.second }?.takeIf { it > 0.01 } ?: 1.0
+    val selectedIndex = selectedPoint?.pointIndex?.takeIf { it in track.points.indices }
+    val labelWidth = if (metric == ElevationPanelMetric.Speed) 72.dp else 42.dp
+    Row(modifier, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        Column(Modifier.width(labelWidth).fillMaxSize(), verticalArrangement = Arrangement.SpaceBetween, horizontalAlignment = Alignment.End) {
+            val labels = when (metric) {
+                ElevationPanelMetric.Elevation -> listOf(0.0, 0.2, 0.4, 0.6, 0.8, 1.0).map { fraction -> formatElevation(maxElevation - range * fraction) }
+                ElevationPanelMetric.HeightChange -> listOf(1.0, 0.6, 0.2, -0.2, -0.6, -1.0).map { fraction -> formatSignedElevation(maxAbsChange * fraction) }
+                ElevationPanelMetric.Speed -> listOf(1.0, 0.8, 0.6, 0.4, 0.2, 0.0).map { fraction -> formatSpeed(maxSpeed * fraction) }
+            }
+            labels.forEach { label ->
+                Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+        Canvas(
+            Modifier
+                .weight(1f)
+                .fillMaxSize()
+                .pointerInput(track.id, track.points.size) {
+                    detectTapGestures { offset ->
+                        if (track.points.size > 1 && size.width > 0) {
+                            val tappedIndex = ((offset.x / size.width) * track.points.lastIndex).roundToInt().coerceIn(track.points.indices)
+                            onPointSelected(tappedIndex)
+                        }
+                    }
+                },
+        ) {
+            val chartHeight = size.height
+            val chartWidth = size.width
+            listOf(0f, 0.2f, 0.4f, 0.6f, 0.8f, 1f).forEach { fraction ->
+                val y = chartHeight * fraction
+                drawLine(guideColor, Offset(0f, y), Offset(chartWidth, y), strokeWidth = if (fraction == 0f || fraction == 1f) 1.5f else 1f)
+            }
+            fun xFor(index: Int): Float = if (track.points.size <= 1) 0f else chartWidth * (index.toFloat() / track.points.lastIndex.toFloat())
+            when (metric) {
+                ElevationPanelMetric.Elevation -> {
+                    fun yFor(elevation: Double): Float = chartHeight - (chartHeight * ((elevation - minElevation) / range).toFloat())
+                    val linePath = Path()
+                    elevationPoints.forEachIndexed { itemIndex, (pointIndex, elevation) ->
+                        val x = xFor(pointIndex)
+                        val y = yFor(elevation)
+                        if (itemIndex == 0) linePath.moveTo(x, y) else linePath.lineTo(x, y)
+                    }
+                    val areaPath = Path().apply {
+                        val first = elevationPoints.first()
+                        moveTo(xFor(first.first), chartHeight)
+                        elevationPoints.forEach { (pointIndex, elevation) -> lineTo(xFor(pointIndex), yFor(elevation)) }
+                        val last = elevationPoints.last()
+                        lineTo(xFor(last.first), chartHeight)
+                        close()
+                    }
+                    drawPath(areaPath, fillColor)
+                    drawPath(linePath, lineColor, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 3f, cap = StrokeCap.Round, join = StrokeJoin.Round))
+                    selectedIndex?.let { pointIndex ->
+                        val selectedElevation = track.points[pointIndex].elevationMeters
+                        val x = xFor(pointIndex)
+                        drawLine(Color(0xFFFFD166), Offset(x, 0f), Offset(x, chartHeight), strokeWidth = 3f)
+                        selectedElevation?.let { elevation ->
+                            drawCircle(Color(0xFFFFD166), radius = 7f, center = Offset(x, yFor(elevation)))
+                            drawCircle(lineColor, radius = 9f, center = Offset(x, yFor(elevation)), style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2f))
+                        }
+                    }
+                }
+                ElevationPanelMetric.HeightChange -> {
+                    if (startElevation == null || changePoints.size < 2) return@Canvas
+                    val baselineY = chartHeight / 2f
+                    drawLine(guideColor.copy(alpha = 0.7f), Offset(0f, baselineY), Offset(chartWidth, baselineY), strokeWidth = 2f)
+                    fun yForChange(change: Double): Float = baselineY - (baselineY * (change / maxAbsChange).toFloat())
+                    val positiveArea = Path().apply {
+                        val first = changePoints.first()
+                        moveTo(xFor(first.first), baselineY)
+                        changePoints.forEach { (pointIndex, change) -> lineTo(xFor(pointIndex), yForChange(change.coerceAtLeast(0.0))) }
+                        val last = changePoints.last()
+                        lineTo(xFor(last.first), baselineY)
+                        close()
+                    }
+                    val negativeArea = Path().apply {
+                        val first = changePoints.first()
+                        moveTo(xFor(first.first), baselineY)
+                        changePoints.forEach { (pointIndex, change) -> lineTo(xFor(pointIndex), yForChange(change.coerceAtMost(0.0))) }
+                        val last = changePoints.last()
+                        lineTo(xFor(last.first), baselineY)
+                        close()
+                    }
+                    drawPath(positiveArea, riseColor.copy(alpha = 0.18f))
+                    drawPath(negativeArea, dropColor.copy(alpha = 0.18f))
+                    changePoints.zipWithNext().forEach { (from, to) ->
+                        val segmentColor = if ((from.second + to.second) / 2.0 >= 0.0) riseColor else dropColor
+                        drawLine(segmentColor, Offset(xFor(from.first), yForChange(from.second)), Offset(xFor(to.first), yForChange(to.second)), strokeWidth = 3f, cap = StrokeCap.Round)
+                    }
+                    selectedIndex?.let { pointIndex ->
+                        val selectedChange = MapPointPresentation.elevationChangeFromStartMeters(track.points, pointIndex)
+                        val x = xFor(pointIndex)
+                        drawLine(Color(0xFFFFD166), Offset(x, 0f), Offset(x, chartHeight), strokeWidth = 3f)
+                        selectedChange?.let { change ->
+                            val changeColor = if (change >= 0.0) riseColor else dropColor
+                            drawCircle(Color(0xFFFFD166), radius = 7f, center = Offset(x, yForChange(change)))
+                            drawCircle(changeColor, radius = 9f, center = Offset(x, yForChange(change)), style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2f))
+                        }
+                    }
+                }
+                ElevationPanelMetric.Speed -> {
+                    fun yForSpeed(speedKilometersPerHour: Double): Float = chartHeight - (chartHeight * (speedKilometersPerHour / maxSpeed).toFloat())
+                    val linePath = Path()
+                    speedPoints.forEachIndexed { itemIndex, (pointIndex, speedKilometersPerHour) ->
+                        val x = xFor(pointIndex)
+                        val y = yForSpeed(speedKilometersPerHour)
+                        if (itemIndex == 0) linePath.moveTo(x, y) else linePath.lineTo(x, y)
+                    }
+                    val areaPath = Path().apply {
+                        val first = speedPoints.first()
+                        moveTo(xFor(first.first), chartHeight)
+                        speedPoints.forEach { (pointIndex, speedKilometersPerHour) -> lineTo(xFor(pointIndex), yForSpeed(speedKilometersPerHour)) }
+                        val last = speedPoints.last()
+                        lineTo(xFor(last.first), chartHeight)
+                        close()
+                    }
+                    drawPath(areaPath, lineColor.copy(alpha = 0.14f))
+                    drawPath(linePath, lineColor, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 3f, cap = StrokeCap.Round, join = StrokeJoin.Round))
+                    selectedIndex?.let { pointIndex ->
+                        val selectedSpeed = MapPointPresentation.speedKilometersPerHour(track.points[pointIndex])
+                        val x = xFor(pointIndex)
+                        drawLine(Color(0xFFFFD166), Offset(x, 0f), Offset(x, chartHeight), strokeWidth = 3f)
+                        selectedSpeed?.let { speedKilometersPerHour ->
+                            drawCircle(Color(0xFFFFD166), radius = 7f, center = Offset(x, yForSpeed(speedKilometersPerHour)))
+                            drawCircle(lineColor, radius = 9f, center = Offset(x, yForSpeed(speedKilometersPerHour)), style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2f))
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
 
 @Composable
 private fun TrackInfoCard(route: MapRoute, onClose: () -> Unit, modifier: Modifier = Modifier) {
@@ -1555,6 +2038,10 @@ private fun TrackSortField.displayLabel(): String = when (this) {
 private val TimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm").withZone(ZoneId.systemDefault())
 private fun formatInstant(instant: java.time.Instant): String = TimeFormatter.format(instant)
 private fun formatDistance(meters: Double): String = if (meters >= 1000) "%.2f km".format(meters / 1000.0) else "${meters.roundToInt()} m"
+private fun formatElevation(meters: Double): String = "${meters.roundToInt()} m"
+private fun formatSignedElevation(meters: Double): String = "${if (meters >= 0.0) "+" else ""}${meters.roundToInt()} m"
+private fun formatElevationSummary(totalAscentMeters: Double, totalDescentMeters: Double): String = "↑ ${formatElevation(totalAscentMeters)} • ↓ ${formatElevation(totalDescentMeters)}"
+private fun formatSpeed(kilometersPerHour: Double): String = "${kilometersPerHour.roundToInt()} km/h"
 private fun formatPollingInterval(millis: Long): String = "%.1f s".format(millis / 1_000.0)
 private fun onOff(value: Boolean): String = if (value) "On" else "Off"
 private fun formatDuration(seconds: Long): String {

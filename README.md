@@ -6,21 +6,29 @@ It captures real routes, saves user-accessible GPX files under `Documents/Stride
 
 ## Screenshots
 
-<p>
-  <img src="data/screenshots/capture_v1.0.jpg" alt="Capture screen" width="24.5%" />
-  <img src="data/screenshots/tracks_v1.0.jpg" alt="Tracks screen" width="24.5%" />
-  <img src="data/screenshots/map_v1.0.jpg" alt="Map screen" width="24.5%" />
-  <img src="data/screenshots/map_v1.1.jpg" alt="Map screen" width="24.5%" />
-</p>
+<table>
+  <tr>
+    <td><img src="data/screenshots/capture_v1.0.jpg" alt="Capture screen" /></td>
+    <td><img src="data/screenshots/tracks_v1.0.jpg" alt="Tracks screen" /></td>
+    <td><img src="data/screenshots/map_v1.0.jpg" alt="Map screen" /></td>
+    <td><img src="data/screenshots/map_v1.1.jpg" alt="Map screen with selected track" /></td>
+  </tr>
+  <tr>
+    <td><img src="data/screenshots/tracks_v1.2.jpg" alt="Tracks screen with elevation stats" /></td>
+    <td><img src="data/screenshots/map_v1.2_elevation.jpg" alt="Map elevation profile" /></td>
+    <td><img src="data/screenshots/map_v1.2_height_change.jpg" alt="Map height change profile" /></td>
+    <td><img src="data/screenshots/map_v1.2_speed.jpg" alt="Map speed profile" /></td>
+  </tr>
+</table>
 
 ## Features
 
-- Capture real GPS tracks from the `Capture` tab.
-- Browse saved tracks from the `Tracks` tab, with Preview and Actions for each row.
-- Display multiple saved or live tracks on the `Map` tab with OpenStreetMap tiles.
-- Edit track messages with safe GPX metadata/filename updates, and delete eligible tracks.
-- Export public GPX files to `Documents/StrideMap/Tracks/`.
-- No accounts, cloud sync, remote API, or social sharing in v1.
+- Capture real GPS tracks with movement type selection, elapsed time, distance, point count, and foreground-service background recording.
+- Save public GPX files to `Documents/StrideMap/Tracks/`, with an app-private active-session journal for capture recovery.
+- Browse saved tracks from the `Tracks` tab with filtering, sorting, preview details, elevation gain/loss, altitude range, and safe edit/delete actions.
+- Display multiple saved or live tracks on the `Map` tab with OpenStreetMap tiles, route colors, start/end/latest markers, selected-point tooltips, and zoom-aware point direction markers.
+- Inspect track profiles from the Map overlay with selectable `Elevation`, `Height change`, and `Speed` views, including chart labels and tap-to-highlight point selection.
+- Personal/local-first app: no accounts, cloud sync, remote API, fleet tracking, social sharing, or app-store release workflow in v1.
 
 ## Personal APK build
 
