@@ -63,6 +63,8 @@ interface TrackSnapshotStore {
     fun listGpxFiles(): List<TrackFileRef>
     fun readText(file: TrackFileRef): String
     fun discardDraft(file: TrackFileRef)
+    fun deleteTrack(file: TrackFileRef)
+    fun rewriteTrackWithRename(file: TrackFileRef, updatedTrack: Track): TrackFileRef
 }
 
 interface AppPrivateSessionJournal {

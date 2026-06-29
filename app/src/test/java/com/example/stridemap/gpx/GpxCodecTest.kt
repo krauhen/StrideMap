@@ -137,6 +137,63 @@ class GpxCodecTest {
     }
 
     @Test
+    fun writerParserPreservesRouteFactsWhenMessageIsEdited() {
+        val original = Track(
+            id = "edited-message.gpx",
+            fileName = "edited-message.gpx",
+            message = "Original",
+            movementType = MovementType.Bike,
+            state = TrackState.Stopped,
+            createdAt = startedAt,
+            updatedAt = startedAt.plusSeconds(65),
+            completedDurationSeconds = 65,
+            points = listOf(
+                LocationPoint(52.5, 13.4, startedAt.plusSeconds(2), accuracyMeters = 4.0, speedMetersPerSecond = 3.2, elevationMeters = 44.2),
+                LocationPoint(52.5008, 13.401, startedAt.plusSeconds(42), accuracyMeters = 5.0, elevationMeters = 45.0),
+            ),
+        )
+        val edited = original.copy(
+            id = "2026-06-08_15-30-04Z_bike_morning-loop.gpx",
+            fileName = "2026-06-08_15-30-04Z_bike_morning-loop.gpx",
+            message = "Morning <loop> & coffee's \"stop\"",
+        )
+
+        val parsed = GpxParser.parse(GpxWriter.write(edited), edited.fileName) as ParsedTrackEntry.Valid
+
+        assertEquals(edited.fileName, parsed.track.fileName)
+        assertEquals("Morning <loop> & coffee's \"stop\"", parsed.track.message)
+        assertEquals(original.movementType, parsed.track.movementType)
+        assertEquals(original.state, parsed.track.state)
+        assertEquals(original.createdAt, parsed.track.createdAt)
+        assertEquals(original.points.last().timestamp, parsed.track.updatedAt)
+        assertEquals(original.durationSeconds, parsed.track.durationSeconds)
+        assertEquals(original.points, parsed.track.points)
+        assertEquals(original.distanceMeters, parsed.track.distanceMeters, 0.001)
+    }
+
+    @Test
+    fun writerParserPreservesValidTrackWhenMessageIsCleared() {
+        val original = Track(
+            id = "clear-message.gpx",
+            fileName = "clear-message.gpx",
+            message = "Original",
+            movementType = MovementType.Walk,
+            state = TrackState.Interrupted,
+            createdAt = startedAt,
+            updatedAt = startedAt.plusSeconds(32),
+            completedDurationSeconds = 32,
+            points = listOf(LocationPoint(52.5, 13.4, startedAt.plusSeconds(2))),
+        )
+
+        val parsed = GpxParser.parse(GpxWriter.write(original.copy(message = "")), original.fileName) as ParsedTrackEntry.Valid
+
+        assertEquals("", parsed.track.message)
+        assertEquals(TrackState.Interrupted, parsed.track.state)
+        assertEquals(original.points, parsed.track.points)
+        assertEquals(32, parsed.track.durationSeconds)
+    }
+
+    @Test
     fun parserReturnsSafeMalformedRepresentation() {
         val result = GpxParser.parse("<not-gpx />", "bad.gpx") as ParsedTrackEntry.Malformed
 

@@ -12,6 +12,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -52,6 +54,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
@@ -71,6 +74,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -99,6 +103,7 @@ import com.example.stridemap.core.TrackState
 import com.example.stridemap.location.LocationRequestSpec
 import com.example.stridemap.session.SetupBlocker
 import com.example.stridemap.storage.DirectTrackRecoveryLocation
+import com.example.stridemap.storage.TrackFileRef
 import org.osmdroid.config.Configuration
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.BoundingBox
@@ -908,14 +913,54 @@ private fun TrackListScreen(padding: PaddingValues, navigate: (AppTab) -> Unit) 
     val displayEntries = appState.displayEntries
     val valid = TrackOrdering.sort(displayEntries.filterIsInstance<ParsedTrackEntry.Valid>().map { it.track }, filter, sortField, ascending)
     val malformed = displayEntries.filterIsInstance<ParsedTrackEntry.Malformed>()
-    var malformedDetails by remember { mutableStateOf<ParsedTrackEntry.Malformed?>(null) }
+    var previewTrack by remember { mutableStateOf<Track?>(null) }
+    var previewMalformed by remember { mutableStateOf<ParsedTrackEntry.Malformed?>(null) }
+    var actionsTrack by remember { mutableStateOf<Track?>(null) }
+    var actionsMalformed by remember { mutableStateOf<String?>(null) }
+    var editTrack by remember { mutableStateOf<Track?>(null) }
+    var deleteTrack by remember { mutableStateOf<Track?>(null) }
+    var deleteMalformed by remember { mutableStateOf<String?>(null) }
 
-    malformedDetails?.let { entry ->
-        AlertDialog(
-            onDismissRequest = { malformedDetails = null },
-            title = { Text("Could not read GPX") },
-            text = { Text("${entry.error.fileName}\n${entry.error.safeSummary}") },
-            confirmButton = { TextButton(onClick = { malformedDetails = null }) { Text("OK") } },
+    previewTrack?.let { track ->
+        TrackPreviewSheet(track = track, fileRef = appState.fileRefsByName[track.fileName], onDismiss = { previewTrack = null })
+    }
+    previewMalformed?.let { entry ->
+        MalformedPreviewSheet(entry = entry, fileRef = appState.fileRefsByName[entry.error.fileName], onDismiss = { previewMalformed = null })
+    }
+    editTrack?.let { track ->
+        EditTrackMessageDialog(
+            track = track,
+            onDismiss = { editTrack = null },
+            onSave = { message ->
+                if (StrideMapRepository.editTrackMessage(track, message)) {
+                    editTrack = null
+                    if (previewTrack?.id == track.id) previewTrack = null
+                }
+            },
+        )
+    }
+    deleteTrack?.let { track ->
+        DeleteTrackDialog(
+            track = track,
+            onDismiss = { deleteTrack = null },
+            onConfirm = {
+                if (StrideMapRepository.deleteTrack(track)) {
+                    deleteTrack = null
+                    if (previewTrack?.id == track.id) previewTrack = null
+                }
+            },
+        )
+    }
+    deleteMalformed?.let { fileName ->
+        DeleteMalformedTrackDialog(
+            fileName = fileName,
+            onDismiss = { deleteMalformed = null },
+            onConfirm = {
+                if (StrideMapRepository.deleteMalformedTrack(fileName)) {
+                    deleteMalformed = null
+                    if (previewMalformed?.error?.fileName == fileName) previewMalformed = null
+                }
+            },
         )
     }
 
@@ -959,25 +1004,64 @@ private fun TrackListScreen(padding: PaddingValues, navigate: (AppTab) -> Unit) 
                 EmptyListState { navigate(AppTab.Capture) }
             } else {
                 LazyColumn(contentPadding = PaddingValues(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 88.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(valid, key = { it.id }) { track -> TrackRow(track, selected = appState.selectedTrack?.id == track.id) { StrideMapRepository.selectTrack(track); navigate(AppTab.Map) } }
-                    items(malformed, key = { it.error.fileName }) { entry -> MalformedRow(entry.error.fileName, entry.error.safeSummary) { malformedDetails = entry } }
+                    items(valid, key = { it.id }) { track ->
+                        Box {
+                            TrackRow(
+                                track = track,
+                                displayed = track.id in appState.displayedTrackIds,
+                                onClick = { previewTrack = track },
+                                onLongClick = { actionsTrack = track },
+                            )
+                            TrackActionsMenu(
+                                track = track,
+                                displayed = track.id in appState.displayedTrackIds,
+                                editable = track.state != TrackState.Live && appState.fileRefsByName[track.fileName]?.canDelete == true,
+                                deletable = track.state != TrackState.Live && appState.fileRefsByName[track.fileName]?.canDelete == true,
+                                expanded = actionsTrack?.id == track.id,
+                                onDismiss = { actionsTrack = null },
+                                onEdit = { editTrack = track; actionsTrack = null },
+                                onDelete = { deleteTrack = track; actionsTrack = null },
+                            )
+                        }
+                    }
+                    items(malformed, key = { it.error.fileName }) { entry ->
+                        Box {
+                            MalformedRow(
+                                fileName = entry.error.fileName,
+                                summary = entry.error.safeSummary,
+                                onClick = { previewMalformed = entry },
+                                onLongClick = { actionsMalformed = entry.error.fileName },
+                            )
+                            MalformedActionsMenu(
+                                fileName = entry.error.fileName,
+                                deletable = appState.fileRefsByName[entry.error.fileName]?.canDelete == true,
+                                expanded = actionsMalformed == entry.error.fileName,
+                                onDismiss = { actionsMalformed = null },
+                                onDelete = { deleteMalformed = entry.error.fileName; actionsMalformed = null },
+                            )
+                        }
+                    }
                 }
             }
         }
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun TrackRow(track: Track, selected: Boolean, onClick: () -> Unit) {
+private fun TrackRow(track: Track, displayed: Boolean, onClick: () -> Unit, onLongClick: () -> Unit) {
     val displayDurationSeconds = rememberDisplayDurationSeconds(track)
     val movementColor = movementTypeColor(track.movementType)
     val movementContentColor = movementTypeOnColor(track.movementType)
     val containerColor = when {
-        selected -> MaterialTheme.colorScheme.primaryContainer
+        displayed -> MaterialTheme.colorScheme.primaryContainer
         track.state == TrackState.Live -> MaterialTheme.colorScheme.surfaceVariant
         else -> MaterialTheme.colorScheme.surface
     }
-    Card(Modifier.fillMaxWidth().clickable(onClick = onClick), colors = CardDefaults.cardColors(containerColor = containerColor)) {
+    Card(
+        Modifier.fillMaxWidth().combinedClickable(onClick = onClick, onLongClick = onLongClick),
+        colors = CardDefaults.cardColors(containerColor = containerColor),
+    ) {
         ListItem(
             headlineContent = { Text(track.message.ifBlank { "${track.movementType.label} capture" }) },
             supportingContent = { Text("${formatInstant(track.createdAt)} • ${formatDuration(displayDurationSeconds)} • ${track.points.size} points${if (track.state == TrackState.Interrupted) " • Capture ended unexpectedly" else ""}") },
@@ -999,14 +1083,142 @@ private fun TrackRow(track: Track, selected: Boolean, onClick: () -> Unit) {
                     if (track.state != TrackState.Stopped) AssistChip(onClick = {}, label = { Text(track.state.serialized.replaceFirstChar { it.uppercase() }) })
                 }
             },
-            overlineContent = if (selected || track.state == TrackState.Live) ({ Text(listOfNotNull(if (selected) "Selected" else null, if (track.state == TrackState.Live) "Live" else null).joinToString(" • ")) }) else null,
+            overlineContent = if (displayed || track.state == TrackState.Live) ({ Text(listOfNotNull(if (displayed) "Displayed" else null, if (track.state == TrackState.Live) "Live" else null).joinToString(" • ")) }) else null,
         )
     }
 }
 
 @Composable
-private fun MalformedRow(fileName: String, summary: String, onClick: () -> Unit) {
-    Card(Modifier.fillMaxWidth().clickable(onClick = onClick)) {
+private fun TrackActionsMenu(
+    track: Track,
+    displayed: Boolean,
+    editable: Boolean,
+    deletable: Boolean,
+    expanded: Boolean,
+    onDismiss: () -> Unit,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
+        DropdownMenuItem(
+            text = { Text(if (displayed) "Hide from Map" else "Display on Map") },
+            onClick = {
+                StrideMapRepository.toggleDisplayed(track)
+                onDismiss()
+            },
+        )
+        if (track.state != TrackState.Live) {
+            DropdownMenuItem(text = { Text("Edit message") }, onClick = onEdit, enabled = editable)
+            DropdownMenuItem(text = { Text("Delete") }, onClick = onDelete, enabled = deletable)
+        }
+    }
+}
+
+@Composable
+private fun EditTrackMessageDialog(track: Track, onDismiss: () -> Unit, onSave: (String) -> Unit) {
+    var value by remember(track.id) { mutableStateOf(track.message) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Edit message") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = value,
+                    onValueChange = { value = it },
+                    label = { Text("Message") },
+                    singleLine = false,
+                    maxLines = 3,
+                )
+                Text("The GPX metadata and filename will be updated. Route points stay unchanged.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        confirmButton = { TextButton(onClick = { onSave(value) }) { Text("Save") } },
+    )
+}
+
+@Composable
+private fun DeleteTrackDialog(track: Track, onDismiss: () -> Unit, onConfirm: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Delete track?") },
+        text = { Text("This permanently deletes the GPX file. This cannot be undone.\n\n${track.message.ifBlank { track.fileName }}") },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        confirmButton = { TextButton(onClick = onConfirm) { Text("Delete", color = MaterialTheme.colorScheme.error) } },
+    )
+}
+
+@Composable
+private fun DeleteMalformedTrackDialog(fileName: String, onDismiss: () -> Unit, onConfirm: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Delete unreadable GPX?") },
+        text = { Text("This permanently deletes the GPX file. This cannot be undone.\n\n$fileName") },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        confirmButton = { TextButton(onClick = onConfirm) { Text("Delete", color = MaterialTheme.colorScheme.error) } },
+    )
+}
+
+@Composable
+private fun MalformedActionsMenu(fileName: String, deletable: Boolean, expanded: Boolean, onDismiss: () -> Unit, onDelete: () -> Unit) {
+    DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
+        DropdownMenuItem(text = { Text("Delete") }, onClick = onDelete, enabled = deletable)
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun TrackPreviewSheet(track: Track, fileRef: TrackFileRef?, onDismiss: () -> Unit) {
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(Modifier.fillMaxWidth().padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(track.message.ifBlank { "${track.movementType.label} capture" }, style = MaterialTheme.typography.headlineSmall)
+            Text("${track.movementType.label} • ${track.state.serialized.replaceFirstChar { it.uppercase() }}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            PreviewMetadataRow("Started", formatInstant(track.createdAt))
+            PreviewMetadataRow("Latest", formatInstant(track.updatedAt))
+            PreviewMetadataRow("Duration", formatDuration(rememberDisplayDurationSeconds(track)))
+            PreviewMetadataRow("Distance", formatDistance(track.distanceMeters))
+            PreviewMetadataRow("Points", track.points.size.toString())
+            PreviewMetadataRow("File", track.fileName)
+            fileRef?.let { PreviewMetadataRow("Storage", storageReferenceLabel(it)) }
+            Spacer(Modifier.height(8.dp))
+            TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.End)) { Text("Close") }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun MalformedPreviewSheet(entry: ParsedTrackEntry.Malformed, fileRef: TrackFileRef?, onDismiss: () -> Unit) {
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(Modifier.fillMaxWidth().padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("Could not read GPX", style = MaterialTheme.typography.headlineSmall)
+            PreviewMetadataRow("File", entry.error.fileName)
+            fileRef?.let { PreviewMetadataRow("Storage", storageReferenceLabel(it)) }
+            PreviewMetadataRow("Issue", entry.error.safeSummary)
+            Spacer(Modifier.height(8.dp))
+            TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.End)) { Text("Close") }
+        }
+    }
+}
+
+private fun storageReferenceLabel(fileRef: TrackFileRef): String = if (fileRef.uri.startsWith("file:")) {
+    "Recovered file • ${fileRef.uri}"
+} else {
+    "MediaStore • ${fileRef.uri}"
+}
+
+@Composable
+private fun PreviewMetadataRow(label: String, value: String) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Top) {
+        Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(0.35f))
+        Text(value, modifier = Modifier.weight(0.65f), maxLines = 3, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun MalformedRow(fileName: String, summary: String, onClick: () -> Unit, onLongClick: () -> Unit) {
+    Card(Modifier.fillMaxWidth().combinedClickable(onClick = onClick, onLongClick = onLongClick)) {
         ListItem(headlineContent = { Text("Could not read $fileName") }, supportingContent = { Text(summary) }, leadingContent = { Text("!") })
     }
 }
@@ -1024,64 +1236,78 @@ private fun EmptyListState(onCapture: () -> Unit) {
 @Composable
 private fun TrackMapScreen(padding: PaddingValues, onNavigate: (AppTab) -> Unit) {
     val appState = StrideMapRepository.state
-    val track = appState.displayTrack
+    val tracks = appState.displayedTracks
+    val liveTrack = appState.liveTrack?.takeIf { it.id in appState.displayedTrackIds }
     var followLive by rememberSaveable { mutableStateOf(appState.settings.followLiveByDefault) }
-    if (track == null) {
-        Column(Modifier.fillMaxSize().padding(padding).padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-            Text("No track selected", style = MaterialTheme.typography.headlineSmall)
-            Text("Start a capture or choose a track from Tracks.")
-            Spacer(Modifier.height(12.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { Button(onClick = { onNavigate(AppTab.Capture) }) { Text("Start capture") }; OutlinedButton(onClick = { onNavigate(AppTab.List) }) { Text("Open Tracks") } }
-        }
-        return
+    val colorAssignments = remember { mutableStateMapOf<String, Int>() }
+    var routeInfoTrackId by remember { mutableStateOf<String?>(null) }
+    val routes = tracks.map { track ->
+        val color = if (track.state == TrackState.Live) LiveRouteColor.toArgb() else colorAssignments.getOrPut(track.id) { savedRouteColor(colorAssignments.size).toArgb() }
+        MapRoute(track = track, routeColor = color, casingColor = Color(0xCC101412).toArgb())
     }
-    if (track.state == TrackState.Live && track.points.isEmpty()) {
-        Column(Modifier.fillMaxSize().padding(padding).padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-            Text("Live capture waiting", style = MaterialTheme.typography.headlineSmall)
-            Text("Recording has started. The map will appear after the first GPS point is saved.")
-            Spacer(Modifier.height(12.dp))
-            Button(onClick = { onNavigate(AppTab.Capture) }) { Text("Open capture") }
-        }
-        return
-    }
-    if (track.points.isEmpty()) {
-        Column(Modifier.fillMaxSize().padding(padding).padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-            Text("Track has no points", style = MaterialTheme.typography.headlineSmall)
-            Text("This GPX has metadata but no saved route points to show on the map.")
-            Spacer(Modifier.height(12.dp))
-            OutlinedButton(onClick = { onNavigate(AppTab.List) }) { Text("Open Tracks") }
-        }
-        return
-    }
+    val routeInfo = routes.firstOrNull { it.track.id == routeInfoTrackId }
     Box(Modifier.fillMaxSize().padding(padding)) {
         OsmRouteMap(
-            track = track,
+            routes = routes,
             followLive = followLive,
             showSavedPointDots = appState.settings.showSavedPointDots,
             routeLineWidth = appState.settings.routeLineWidth,
-            onGesture = { followLive = false },
+            onGesture = { followLive = false; routeInfoTrackId = null },
+            onRouteSelected = { routeInfoTrackId = it },
         )
-        TrackInfoCard(
-            track,
-            Modifier
-                .align(Alignment.TopCenter)
-                .statusBarsPadding()
-                .padding(start = 16.dp, top = 12.dp, end = 16.dp),
-        )
-        if (appState.liveTrack != null && appState.selectedTrack != null) {
-            ExtendedFloatingActionButton(onClick = { StrideMapRepository.showLiveTrack(); followLive = true }, modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp), text = { Text("Show live") }, icon = { Icon(CaptureTabIcon, contentDescription = null) })
-        } else if (track.state == TrackState.Live && !followLive) {
+        if (routes.isEmpty()) {
+            EmptyDisplayedTracksHint(onOpenTracks = { onNavigate(AppTab.List) }, modifier = Modifier.align(Alignment.BottomCenter).padding(16.dp))
+        } else if (liveTrack?.points?.isEmpty() == true && routes.all { it.track.points.isEmpty() }) {
+            LiveWaitingMapHint(modifier = Modifier.align(Alignment.BottomCenter).padding(16.dp))
+        }
+        routeInfo?.let {
+            TrackInfoCard(
+                route = it,
+                onClose = { routeInfoTrackId = null },
+                modifier = Modifier.align(Alignment.BottomCenter).padding(16.dp),
+            )
+        }
+        if (liveTrack != null && !followLive) {
             ExtendedFloatingActionButton(onClick = { followLive = true }, modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp), text = { Text("Follow live location") }, icon = { Icon(MapTabIcon, contentDescription = null) })
         }
     }
 }
 
+private data class MapRoute(val track: Track, val routeColor: Int, val casingColor: Int)
+
+private val LiveRouteColor = Color(0xFF00C853)
+
+private fun savedRouteColor(index: Int): Color = Color.hsv(
+    hue = ((index * 137.508f) % 360f),
+    saturation = 0.72f,
+    value = 0.78f,
+)
+
 @Composable
-private fun OsmRouteMap(track: Track, followLive: Boolean, showSavedPointDots: Boolean, routeLineWidth: Float, onGesture: () -> Unit) {
+private fun EmptyDisplayedTracksHint(onOpenTracks: () -> Unit, modifier: Modifier = Modifier) {
+    Card(modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("No tracks displayed", style = MaterialTheme.typography.titleMedium)
+            Text("Long-press a track in Tracks and choose Display.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            OutlinedButton(onClick = onOpenTracks) { Text("Open Tracks") }
+        }
+    }
+}
+
+@Composable
+private fun LiveWaitingMapHint(modifier: Modifier = Modifier) {
+    Card(modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Waiting for first saved GPS point", style = MaterialTheme.typography.titleMedium)
+            Text("Recording is active. The route will appear once a point is saved.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+@Composable
+private fun OsmRouteMap(routes: List<MapRoute>, followLive: Boolean, showSavedPointDots: Boolean, routeLineWidth: Float, onGesture: () -> Unit, onRouteSelected: (String) -> Unit) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    val routeColor = movementTypeColor(track.movementType).toArgb()
-    val routeCasingColor = Color(0xCC101412).toArgb()
     val mapView = remember {
         MapView(context).apply {
             setTileSource(TileSourceFactory.MAPNIK)
@@ -1090,7 +1316,8 @@ private fun OsmRouteMap(track: Track, followLive: Boolean, showSavedPointDots: B
             minZoomLevel = 3.0
         }
     }
-    var lastViewportKey by remember { mutableStateOf<String?>(null) }
+    var initialViewportApplied by remember { mutableStateOf(false) }
+    var lastLiveFollowKey by remember { mutableStateOf<String?>(null) }
     DisposableEffect(lifecycleOwner, mapView) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
@@ -1104,43 +1331,57 @@ private fun OsmRouteMap(track: Track, followLive: Boolean, showSavedPointDots: B
     }
     AndroidView(factory = { mapView }, modifier = Modifier.fillMaxSize(), update = { view ->
         view.setOnTouchListener { _, _ -> onGesture(); false }
-        val viewportKey = routeViewportKey(track, followLive)
-        val shouldUpdateViewport = viewportKey != lastViewportKey
-        renderTrack(view, track, followLive, shouldUpdateViewport, routeColor, routeCasingColor, showSavedPointDots, routeLineWidth)
-        if (shouldUpdateViewport && view.width > 0 && view.height > 0) lastViewportKey = viewportKey
+        val liveFollowKey = routes.firstOrNull { it.track.state == TrackState.Live }?.let { routeViewportKey(it.track, followLive) }
+        val updateInitialViewport = !initialViewportApplied
+        val updateLiveViewport = followLive && liveFollowKey != null && liveFollowKey != lastLiveFollowKey
+        renderTracks(view, routes, followLive, updateInitialViewport, updateLiveViewport, showSavedPointDots, routeLineWidth, onRouteSelected)
+        if (updateInitialViewport && view.width > 0 && view.height > 0) initialViewportApplied = true
+        if (updateLiveViewport && view.width > 0 && view.height > 0) lastLiveFollowKey = liveFollowKey
     })
 }
 
-private fun renderTrack(mapView: MapView, track: Track, followLive: Boolean, updateViewport: Boolean, routeColor: Int, routeCasingColor: Int, showSavedPointDots: Boolean, routeLineWidth: Float) {
+private fun renderTracks(mapView: MapView, routes: List<MapRoute>, followLive: Boolean, updateInitialViewport: Boolean, updateLiveViewport: Boolean, showSavedPointDots: Boolean, routeLineWidth: Float, onRouteSelected: (String) -> Unit) {
     mapView.overlays.clear()
-    val points = track.points.map { GeoPoint(it.latitude, it.longitude) }
-    if (points.size > 1) {
-        mapView.overlays.add(Polyline().apply { setPoints(points); outlinePaint.strokeWidth = routeLineWidth + 4f; outlinePaint.color = routeCasingColor })
-        mapView.overlays.add(Polyline().apply { setPoints(points); outlinePaint.strokeWidth = routeLineWidth; outlinePaint.color = routeColor })
-    }
-    if (points.size == 1) {
-        val label = if (track.state == TrackState.Live) "Latest live point" else "Start"
-        mapView.overlays.add(marker(mapView, points.single(), label, "Only saved point", MarkerKind.Latest, routeColor))
-    } else if (points.size > 1) {
-        if (showSavedPointDots) {
-            points.drop(1).dropLast(1).forEachIndexed { index, point ->
-                mapView.overlays.add(marker(mapView, point, "Saved point ${index + 2}", "Intermediate saved point", MarkerKind.SavedPoint, routeColor))
-            }
+    val allPoints = routes.flatMap { it.track.points.map { point -> GeoPoint(point.latitude, point.longitude) } }
+    routes.forEach { route ->
+        val track = route.track
+        val points = track.points.map { GeoPoint(it.latitude, it.longitude) }
+        if (points.size > 1) {
+            mapView.overlays.add(Polyline().apply { setPoints(points); outlinePaint.strokeWidth = routeLineWidth + 4f; outlinePaint.color = route.casingColor })
+            mapView.overlays.add(Polyline().apply {
+                setPoints(points)
+                outlinePaint.strokeWidth = routeLineWidth
+                outlinePaint.color = route.routeColor
+                setOnClickListener { _, _, _ -> onRouteSelected(track.id); true }
+            })
         }
-        mapView.overlays.add(marker(mapView, points.first(), "Start", "First saved point", MarkerKind.Start, routeColor))
-        mapView.overlays.add(
-            marker(
-                mapView,
-                points.last(),
-                if (track.state == TrackState.Live) "Latest live point" else "End",
-                if (track.state == TrackState.Live) "Most recent saved point" else "Final saved point",
-                if (track.state == TrackState.Live) MarkerKind.Latest else MarkerKind.End,
-                routeColor,
-            ),
-        )
+        if (points.size == 1) {
+            val label = if (track.state == TrackState.Live) "Latest live point" else "Start"
+            mapView.overlays.add(marker(mapView, points.single(), label, "Only saved point", MarkerKind.Latest, route.routeColor) { onRouteSelected(track.id) })
+        } else if (points.size > 1) {
+            if (showSavedPointDots) {
+                points.drop(1).dropLast(1).forEachIndexed { index, point ->
+                    mapView.overlays.add(marker(mapView, point, "Saved point ${index + 2}", "Intermediate saved point", MarkerKind.SavedPoint, route.routeColor) { onRouteSelected(track.id) })
+                }
+            }
+            mapView.overlays.add(marker(mapView, points.first(), "Start", "First saved point", MarkerKind.Start, route.routeColor) { onRouteSelected(track.id) })
+            mapView.overlays.add(
+                marker(
+                    mapView,
+                    points.last(),
+                    if (track.state == TrackState.Live) "Latest live point" else "End",
+                    if (track.state == TrackState.Live) "Most recent saved point" else "Final saved point",
+                    if (track.state == TrackState.Live) MarkerKind.Latest else MarkerKind.End,
+                    route.routeColor,
+                ) { onRouteSelected(track.id) },
+            )
+        }
     }
-    if (updateViewport && points.isNotEmpty() && (track.state != TrackState.Live || followLive)) {
-        mapView.post { applyRouteViewport(mapView, points, centerOnLatest = track.state == TrackState.Live && followLive) }
+    val livePoints = routes.firstOrNull { it.track.state == TrackState.Live }?.track?.points?.map { GeoPoint(it.latitude, it.longitude) }.orEmpty()
+    if (updateLiveViewport && livePoints.isNotEmpty() && followLive) {
+        mapView.post { applyRouteViewport(mapView, livePoints, centerOnLatest = true) }
+    } else if (updateInitialViewport && allPoints.isNotEmpty()) {
+        mapView.post { applyRouteViewport(mapView, allPoints, centerOnLatest = false) }
     }
     mapView.invalidate()
 }
@@ -1181,12 +1422,13 @@ private fun applyRouteViewport(mapView: MapView, points: List<GeoPoint>, centerO
     }
 }
 
-private fun marker(mapView: MapView, point: GeoPoint, label: String, detail: String, kind: MarkerKind, movementColor: Int): Marker = Marker(mapView).apply {
+private fun marker(mapView: MapView, point: GeoPoint, label: String, detail: String, kind: MarkerKind, movementColor: Int, onClick: () -> Unit): Marker = Marker(mapView).apply {
     position = point
     title = label
     snippet = detail
     icon = markerDrawable(mapView, kind, movementColor)
     setAnchor(Marker.ANCHOR_CENTER, if (kind == MarkerKind.SavedPoint || kind == MarkerKind.Latest) Marker.ANCHOR_CENTER else Marker.ANCHOR_BOTTOM)
+    setOnMarkerClickListener { _, _ -> onClick(); true }
 }
 
 private enum class MarkerKind { SavedPoint, Start, End, Latest }
@@ -1212,19 +1454,25 @@ private fun markerDrawable(mapView: MapView, kind: MarkerKind, movementColor: In
 private data class MarkerStyle(val shape: Int, val sizeDp: Float, val fill: Int, val stroke: Int)
 
 @Composable
-private fun TrackInfoCard(track: Track, modifier: Modifier = Modifier) {
+private fun TrackInfoCard(route: MapRoute, onClose: () -> Unit, modifier: Modifier = Modifier) {
+    val track = route.track
     val displayDurationSeconds = rememberDisplayDurationSeconds(track)
-    val movementColor = movementTypeColor(track.movementType)
     Card(modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier.padding(12.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            Surface(
+                modifier = Modifier.size(14.dp),
+                shape = CircleShape,
+                color = Color(route.routeColor),
+                content = {},
+            )
             Icon(
                 imageVector = movementIcon(track.movementType),
                 contentDescription = track.movementType.label,
-                tint = movementColor,
+                tint = Color(route.routeColor),
                 modifier = Modifier.size(18.dp),
             )
             Text(
@@ -1233,7 +1481,9 @@ private fun TrackInfoCard(track: Track, modifier: Modifier = Modifier) {
                 overflow = TextOverflow.Ellipsis,
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f),
             )
+            IconButton(onClick = onClose) { Text("×") }
         }
     }
 }

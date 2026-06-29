@@ -96,7 +96,7 @@ object StrideMapRepository {
             if (state.liveTrack != null) add(SetupBlocker.ExistingLiveTrack)
         }
         val readiness = SetupReadiness(blockers)
-        sessionState = sessionState.copy(setupReadiness = readiness, liveTrack = state.liveTrack, selectedTrackId = state.selectedTrack?.id)
+        sessionState = sessionState.copy(setupReadiness = readiness, liveTrack = state.liveTrack, selectedTrackId = null)
         state = state.copy(
             readiness = readiness,
             trackFolder = trackFolder,
@@ -188,7 +188,7 @@ object StrideMapRepository {
             activeFileRef = storage.writeFullSnapshot(liveTrack)
             storage.replaceActiveSession(SessionJournalEntry(liveTrack.id, requireNotNull(activeFileRef), liveTrack, Instant.now()))
             sessionState = nextState
-            state = state.copy(liveTrack = liveTrack, selectedTrack = null, transientMessage = "Capture started")
+            state = state.copy(liveTrack = liveTrack, transientMessage = "Capture started")
             refreshSetup()
             val intent = Intent(appContext, CaptureForegroundService::class.java).setAction(CaptureForegroundService.ActionStart)
             ContextCompat.startForegroundService(appContext, intent)
@@ -243,7 +243,6 @@ object StrideMapRepository {
                 sessionState = result.state
                 state = state.copy(
                     liveTrack = null,
-                    selectedTrack = result.finalizedTrack,
                     movementType = state.settings.defaultMovementType,
                     captureMessage = state.settings.defaultCaptureNote,
                     transientMessage = "Track saved",
@@ -284,7 +283,12 @@ object StrideMapRepository {
         if (live.points.isEmpty()) {
             file?.let { runCatching { storage.discardDraft(it) } }
             storage.clearActiveSession(live.id)
-            state = state.copy(liveTrack = null, movementType = state.settings.defaultMovementType, captureMessage = state.settings.defaultCaptureNote, transientMessage = reason)
+            state = state.copy(
+                liveTrack = null,
+                movementType = state.settings.defaultMovementType,
+                captureMessage = state.settings.defaultCaptureNote,
+                transientMessage = reason,
+            )
         } else {
             val interruptedAt = Instant.now()
             val interrupted = live.copy(
@@ -297,7 +301,7 @@ object StrideMapRepository {
                 activeFileRef = storage.writeFullSnapshot(interrupted)
                 storage.clearActiveSession(interrupted.id)
             }
-            state = state.copy(liveTrack = null, selectedTrack = interrupted, movementType = state.settings.defaultMovementType, captureMessage = state.settings.defaultCaptureNote, transientMessage = reason)
+            state = state.copy(liveTrack = null, movementType = state.settings.defaultMovementType, captureMessage = state.settings.defaultCaptureNote, transientMessage = reason)
         }
         activeFileRef = null
         refreshSetup()
@@ -306,7 +310,8 @@ object StrideMapRepository {
     fun scanTracks(recoverStaleLive: Boolean = false) {
         state = state.copy(isScanning = true)
         val journalEntry = storage.activeSession()
-        val parsed = storage.listGpxFiles().map { file ->
+        val files = storage.listGpxFiles()
+        val parsed = files.map { file ->
             runCatching { GpxParser.parse(storage.readText(file), file.fileName) }.getOrElse {
                 ParsedTrackEntry.Malformed(MalformedTrack(file.fileName, com.example.stridemap.core.ParseErrorCategory.InvalidXml, "Could not read GPX file."))
             }.let { entry ->
@@ -315,24 +320,80 @@ object StrideMapRepository {
         }
         val recovered = if (recoverStaleLive) recoverStale(parsed) else parsed
         val validTracks = recovered.filterIsInstance<ParsedTrackEntry.Valid>().map { it.track }
-        val selected = state.selectedTrack?.let { selected -> validTracks.firstOrNull { it.id == selected.id } }
         val liveFromStorage = validTracks.firstOrNull { it.state == TrackState.Live }
+        val validIds = validTracks.mapTo(mutableSetOf()) { it.id }
+        val liveTrack = state.liveTrack ?: liveFromStorage
+        liveTrack?.let { validIds.add(it.id) }
         state = state.copy(
             entries = recovered,
-            selectedTrack = selected,
-            liveTrack = state.liveTrack ?: liveFromStorage,
+            fileRefsByName = files.associateBy { it.fileName },
+            liveTrack = liveTrack,
+            displayedTrackIds = state.displayedTrackIds.intersect(validIds),
             isScanning = false,
             transientMessage = if (state.isScanning) state.transientMessage else state.transientMessage,
         )
         refreshSetup()
     }
 
-    fun selectTrack(track: Track) {
-        state = state.copy(selectedTrack = track, transientMessage = null)
+    fun toggleDisplayed(track: Track) {
+        val next = if (track.id in state.displayedTrackIds) {
+            state.displayedTrackIds - track.id
+        } else {
+            state.displayedTrackIds + track.id
+        }
+        state = state.copy(displayedTrackIds = next, transientMessage = null)
     }
 
-    fun showLiveTrack() {
-        state.liveTrack?.let { state = state.copy(selectedTrack = null) }
+    fun editTrackMessage(track: Track, message: String): Boolean {
+        if (track.state == TrackState.Live) return fail("Stop recording before editing this track")
+        val ref = state.fileRefsByName[track.fileName] ?: return fail("Could not find ${track.fileName}")
+        val trimmedMessage = message.trim()
+        if (trimmedMessage == track.message) {
+            state = state.copy(transientMessage = "No message changes to save")
+            return true
+        }
+        val baseName = TrackFilename.buildBaseName(track.createdAt, track.movementType, trimmedMessage)
+        val newFileName = TrackFilename.uniqueName(baseName) { candidate -> candidate == track.fileName || storage.exists(candidate) }
+        val updatedTrack = track.copy(id = newFileName, fileName = newFileName, message = trimmedMessage)
+        return try {
+            val updatedRef = storage.rewriteTrackWithRename(ref, updatedTrack)
+            state = state.replaceTrackAfterRename(track.id, updatedTrack).copy(
+                fileRefsByName = (state.fileRefsByName - ref.fileName) + (updatedRef.fileName to updatedRef),
+                transientMessage = "Track message updated",
+            )
+            true
+        } catch (error: Exception) {
+            fail("Could not edit track: ${error.safeMessage()}")
+        }
+    }
+
+    fun deleteTrack(track: Track): Boolean {
+        if (track.state == TrackState.Live) return fail("Stop recording before deleting this track")
+        val ref = state.fileRefsByName[track.fileName] ?: return fail("Could not find ${track.fileName}")
+        return try {
+            storage.deleteTrack(ref)
+            state = state.removeTrack(track.id).copy(
+                fileRefsByName = state.fileRefsByName - ref.fileName,
+                transientMessage = "Track deleted",
+            )
+            true
+        } catch (error: Exception) {
+            fail("Could not delete track: ${error.safeMessage()}")
+        }
+    }
+
+    fun deleteMalformedTrack(fileName: String): Boolean {
+        val ref = state.fileRefsByName[fileName] ?: return fail("Could not find $fileName")
+        return try {
+            storage.deleteTrack(ref)
+            state = state.removeTrack(fileName).copy(
+                fileRefsByName = state.fileRefsByName - ref.fileName,
+                transientMessage = "Track deleted",
+            )
+            true
+        } catch (error: Exception) {
+            fail("Could not delete track: ${error.safeMessage()}")
+        }
     }
 
     private fun recoverStale(entries: List<ParsedTrackEntry>): List<ParsedTrackEntry> = entries.mapNotNull { entry ->
@@ -403,7 +464,13 @@ object StrideMapRepository {
             }.onFailure {
                 storage.replaceActiveSession(SessionJournalEntry(interrupted.id, activeFileRef ?: TrackFileRef(interrupted.fileName, ""), interrupted, lastSnapshotWrittenAt = null))
             }
-            state = state.copy(liveTrack = null, selectedTrack = interrupted, movementType = state.settings.defaultMovementType, captureMessage = state.settings.defaultCaptureNote, transientMessage = reason)
+            state = state.copy(
+                entries = state.entries.upsertValidTrack(interrupted),
+                liveTrack = null,
+                movementType = state.settings.defaultMovementType,
+                captureMessage = state.settings.defaultCaptureNote,
+                transientMessage = reason,
+            )
         }
         activeFileRef = null
         refreshSetup()
@@ -504,7 +571,8 @@ data class AppState(
         mediaStoreTracksTargetReady = false,
     ),
     val entries: List<ParsedTrackEntry> = emptyList(),
-    val selectedTrack: Track? = null,
+    val fileRefsByName: Map<String, TrackFileRef> = emptyMap(),
+    val displayedTrackIds: Set<String> = emptySet(),
     val liveTrack: Track? = null,
     val isScanning: Boolean = false,
     val lastAccuracyMeters: Double? = null,
@@ -512,7 +580,6 @@ data class AppState(
     val settings: UserSettings = UserSettings.default(),
 ) {
     val hasMovementType: Boolean = movementType != null
-    val displayTrack: Track? = selectedTrack ?: liveTrack
     val displayEntries: List<ParsedTrackEntry>
         get() {
             val live = liveTrack ?: return entries
@@ -524,7 +591,61 @@ data class AppState(
             }
             return listOf(ParsedTrackEntry.Valid(live)) + withoutDuplicateLive
         }
+    val displayedTracks: List<Track>
+        get() = displayEntries.mapNotNull { entry ->
+            (entry as? ParsedTrackEntry.Valid)?.track?.takeIf { it.id in displayedTrackIds }
+        }
 }
+
+internal fun List<ParsedTrackEntry>.upsertValidTrack(track: Track): List<ParsedTrackEntry> {
+    val replacement = ParsedTrackEntry.Valid(track)
+    var replaced = false
+    val updated = map { entry ->
+        val matches = when (entry) {
+            is ParsedTrackEntry.Valid -> entry.track.id == track.id
+            is ParsedTrackEntry.Malformed -> entry.error.fileName == track.fileName
+        }
+        if (matches) {
+            replaced = true
+            replacement
+        } else {
+            entry
+        }
+    }
+    return if (replaced) updated else listOf(replacement) + updated
+}
+
+internal fun AppState.replaceTrackAfterRename(oldTrackId: String, updatedTrack: Track): AppState {
+    val updatedEntries = entries
+        .filterNot { entry ->
+            when (entry) {
+                is ParsedTrackEntry.Valid -> entry.track.id == oldTrackId || entry.track.id == updatedTrack.id
+                is ParsedTrackEntry.Malformed -> entry.error.fileName == oldTrackId || entry.error.fileName == updatedTrack.fileName
+            }
+        }
+        .let { listOf(ParsedTrackEntry.Valid(updatedTrack)) + it }
+    val migratedDisplayedIds = if (oldTrackId in displayedTrackIds) {
+        (displayedTrackIds - oldTrackId) + updatedTrack.id
+    } else {
+        displayedTrackIds
+    } - oldTrackId
+    return copy(
+        entries = updatedEntries,
+        displayedTrackIds = migratedDisplayedIds,
+        liveTrack = liveTrack?.takeUnless { it.id == oldTrackId }?.let { if (it.id == updatedTrack.id) updatedTrack else it },
+    )
+}
+
+internal fun AppState.removeTrack(trackId: String): AppState = copy(
+    entries = entries.filterNot { entry ->
+        when (entry) {
+            is ParsedTrackEntry.Valid -> entry.track.id == trackId
+            is ParsedTrackEntry.Malformed -> entry.error.fileName == trackId
+        }
+    },
+    displayedTrackIds = displayedTrackIds - trackId,
+    liveTrack = liveTrack?.takeUnless { it.id == trackId },
+)
 
 data class UserSettings(
     private val gpsPollingIntervalsMillis: Map<MovementType, Long>,

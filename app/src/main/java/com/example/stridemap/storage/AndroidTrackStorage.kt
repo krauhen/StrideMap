@@ -105,7 +105,7 @@ class AndroidTrackStorage(private val context: Context) : TrackSnapshotStore, Ap
             ?.filter { it.isFile && DirectTrackRecoveryLocation.isRecoverableGpxFile(it.name) }
             ?.sortedBy { it.name }
             ?.map { file ->
-                TrackFileRef(fileName = file.name, uri = file.toURI().toString(), canDelete = false)
+                TrackFileRef(fileName = file.name, uri = file.toURI().toString(), canDelete = runCatching { safeDirectTrackFile(file.parentFile ?: File(DirectTrackRecoveryLocation.AbsolutePath), file.name); true }.getOrDefault(false))
             }
             .orEmpty()
     }.getOrDefault(emptyList())
@@ -124,6 +124,78 @@ class AndroidTrackStorage(private val context: Context) : TrackSnapshotStore, Ap
     override fun discardDraft(file: TrackFileRef) {
         if (!file.canDelete) return
         resolver.delete(Uri.parse(file.uri), null, null)
+    }
+
+    override fun deleteTrack(file: TrackFileRef) {
+        require(file.canDelete) { "Track file is not deletable" }
+        val uri = Uri.parse(file.uri)
+        if (uri.scheme == "file") {
+            val directFile = safeDirectTrackFile(uri, file.fileName)
+            require(directFile.delete() || !directFile.exists()) { "Could not delete ${file.fileName}" }
+            return
+        }
+        require(resolver.delete(uri, null, null) > 0) { "Could not delete ${file.fileName}" }
+    }
+
+    override fun rewriteTrackWithRename(file: TrackFileRef, updatedTrack: Track): TrackFileRef {
+        require(updatedTrack.state != com.example.stridemap.core.TrackState.Live) { "Live tracks cannot be edited" }
+        require(file.fileName != updatedTrack.fileName) { "Edited track filename did not change" }
+        val xml = GpxWriter.write(updatedTrack)
+        require(GpxParser.parse(xml, updatedTrack.fileName) is ParsedTrackEntry.Valid) { "Generated GPX did not validate" }
+        val uri = Uri.parse(file.uri)
+        return if (uri.scheme == "file") {
+            rewriteDirectFile(file, updatedTrack, xml)
+        } else {
+            rewriteMediaStoreFile(file, updatedTrack, xml)
+        }
+    }
+
+    private fun rewriteMediaStoreFile(file: TrackFileRef, updatedTrack: Track, xml: String): TrackFileRef {
+        val newUri = insertPendingFile(updatedTrack.fileName)
+        val newRef = TrackFileRef(updatedTrack.fileName, newUri.toString())
+        try {
+            writeText(newUri, updatedTrack.fileName, xml)
+            require(GpxParser.parse(readText(newUri, updatedTrack.fileName), updatedTrack.fileName) is ParsedTrackEntry.Valid) { "Canonical GPX did not validate" }
+            setPending(newUri, pending = false)
+            try {
+                deleteTrack(file)
+            } catch (error: Exception) {
+                runCatching { deleteTrack(newRef) }
+                throw error
+            }
+            return newRef
+        } catch (error: Exception) {
+            runCatching { setPending(newUri, pending = false) }
+            runCatching { deleteTrack(newRef) }
+            throw error
+        }
+    }
+
+    private fun rewriteDirectFile(file: TrackFileRef, updatedTrack: Track, xml: String): TrackFileRef {
+        require(file.canDelete && hasAllFilesRecoveryAccess()) { "Recovered GPX is not writable" }
+        val original = safeDirectTrackFile(Uri.parse(file.uri), file.fileName)
+        val target = safeDirectTrackFile(original.parentFile ?: File(DirectTrackRecoveryLocation.AbsolutePath), updatedTrack.fileName)
+        require(original == target || !target.exists()) { "${updatedTrack.fileName} already exists" }
+        val temp = safeDirectTrackFile(original.parentFile ?: File(DirectTrackRecoveryLocation.AbsolutePath), ".${updatedTrack.fileName.removeSuffix(".gpx")}.tmp.gpx")
+        temp.writeText(xml, Charsets.UTF_8)
+        try {
+            require(GpxParser.parse(temp.readText(Charsets.UTF_8), updatedTrack.fileName) is ParsedTrackEntry.Valid) { "Canonical GPX did not validate" }
+            if (original != target) {
+                require(temp.renameTo(target)) { "Could not create ${updatedTrack.fileName}" }
+                try {
+                    require(original.delete() || !original.exists()) { "Could not delete ${file.fileName}" }
+                } catch (error: Exception) {
+                    if (original.exists()) runCatching { target.delete() }
+                    throw error
+                }
+            } else {
+                require(temp.renameTo(original)) { "Could not replace ${file.fileName}" }
+            }
+            return TrackFileRef(updatedTrack.fileName, target.toURI().toString(), canDelete = true)
+        } catch (error: Exception) {
+            runCatching { temp.delete() }
+            throw error
+        }
     }
 
     override fun activeSession(): SessionJournalEntry? {
@@ -200,6 +272,20 @@ class AndroidTrackStorage(private val context: Context) : TrackSnapshotStore, Ap
     private fun setPending(uri: Uri, pending: Boolean) {
         val values = ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, if (pending) 1 else 0) }
         resolver.update(uri, values, null, null)
+    }
+
+    private fun safeDirectTrackFile(uri: Uri, fileName: String): File = safeDirectTrackFile(
+        File(requireNotNull(uri.path) { "Could not open $fileName" }).parentFile ?: File(DirectTrackRecoveryLocation.AbsolutePath),
+        fileName,
+    )
+
+    private fun safeDirectTrackFile(parent: File, fileName: String): File {
+        require(DirectTrackRecoveryLocation.isRecoverableGpxFile(fileName)) { "Invalid GPX filename" }
+        require('/' !in fileName && '\\' !in fileName && fileName != "." && fileName != "..") { "Invalid GPX filename" }
+        val root = File(DirectTrackRecoveryLocation.AbsolutePath).canonicalFile
+        val candidate = File(parent, fileName).canonicalFile
+        require(candidate.parentFile == root) { "GPX file is outside StrideMap track folder" }
+        return candidate
     }
 
     private companion object {

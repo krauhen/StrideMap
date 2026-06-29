@@ -7,16 +7,18 @@ It captures real routes, saves user-accessible GPX files under `Documents/Stride
 ## Screenshots
 
 <p>
-  <img src="./data/capture.jpg" alt="Capture screen" width="32.5%" />
-  <img src="./data/tracks.jpg" alt="Tracks screen" width="32.5%" />
-  <img src="./data/map.jpg" alt="Map screen" width="32.5%" />
+  <img src="data/screenshots/capture_v1.0.jpg" alt="Capture screen" width="24.5%" />
+  <img src="data/screenshots/tracks_v1.0.jpg" alt="Tracks screen" width="24.5%" />
+  <img src="data/screenshots/map_v1.0.jpg" alt="Map screen" width="24.5%" />
+  <img src="data/screenshots/map_v1.1.jpg" alt="Map screen" width="24.5%" />
 </p>
 
 ## Features
 
 - Capture real GPS tracks from the `Capture` tab.
-- Browse saved tracks from the `Tracks` tab.
-- View selected or live routes on the `Map` tab with OpenStreetMap tiles.
+- Browse saved tracks from the `Tracks` tab, with Preview and Actions for each row.
+- Display multiple saved or live tracks on the `Map` tab with OpenStreetMap tiles.
+- Edit track messages with safe GPX metadata/filename updates, and delete eligible tracks.
 - Export public GPX files to `Documents/StrideMap/Tracks/`.
 - No accounts, cloud sync, remote API, or social sharing in v1.
 

@@ -1,7 +1,7 @@
 # StrideMap Technical Specification
 
 Status: canonical current-application specification  
-Last updated: 2026-06-09  
+Last updated: 2026-06-29
 Primary audience: Android/Kotlin implementation agents and maintainers
 
 ## 1. Purpose and authority
@@ -15,6 +15,7 @@ When this document conflicts with older session notes, older simulator-first not
 This specification synthesizes:
 
 - `agentic/knowledge/features/init-creating-all-defined-components.md`.
+- `agentic/knowledge/features/multi-track-map-display-and-track-actions.md`.
 - `agentic/sessions/summaries/2026-06-09__stridemap-sgs23__polling-and-track-recovery.md`.
 - `agentic/sessions/summaries/2026-06-08__stridemap-grilling__capture-reference-track-v1.md`.
 - `agentic/sessions/summaries/2026-06-08__stridemap-initial-grilling__gps-tracking-mvp.md`.
@@ -24,7 +25,7 @@ This specification synthesizes:
 
 StrideMap is a personal Android GPS/location-history app. The current v1 product is a real GPS reference-track capture app, not a simulator-first prototype. Its main responsibility is to capture trustworthy user-owned real-world GPX traces that can be used as the foundation for later app features, downstream projects, and evaluation.
 
-The app records tracks from the Android location stack, persists accepted points as GPX, stores public track files under `Documents/StrideMap/Tracks/`, shows local captured tracks in a library, and renders selected/live tracks on an OpenStreetMap map.
+The app records tracks from the Android location stack, persists accepted points as GPX, stores public track files under `Documents/StrideMap/Tracks/`, shows local captured tracks in a library, and renders explicitly displayed saved/live tracks on an OpenStreetMap map.
 
 ### 1.3 Current validation status
 
@@ -39,6 +40,8 @@ Implemented and previously validated:
 - Samsung S23 All files access recovery flow was approved by the user and confirmed to work.
 - Main-tab header removal, Capture-only inline Settings gear, automatic Tracks refresh on tab selection, top Map overlay placement, and bottom-right Map live/follow actions were implemented after Samsung S23 feedback; the user confirmed the tab/header/overlay arrangement was wanted.
 - Hiding osmdroid built-in plus/minus zoom controls was implemented, debug-assembled, and installed on Samsung S23; pinch zoom remains enabled.
+- Multi-track Map display, Tracks Preview/Actions, session-only displayed-track state, eligible non-live message edit/rename/delete, and safe malformed-track delete paths are implemented in current code.
+- JVM tests include current AppState coverage for explicit displayed tracks, multi-saved-track display state, live-not-automatic display behavior, malformed/missing-id filtering, rename display-state migration, and delete display-state cleanup.
 
 Still pending or not proven:
 
@@ -50,6 +53,7 @@ Still pending or not proven:
 - A structured Samsung S23 route-validation pass with expected route shape, background/screen-off behavior, notification behavior, and public GPX visibility.
 - Long-running capture, process kill, startup stale-live recovery, and app/service failure scenarios under real device conditions.
 - Accessibility audit and light-theme visual pass.
+- Structured manual validation of Preview/Actions, multi-track Map interactions, route-info card behavior, edit/rename, delete, malformed delete, and recovered direct-file edit/delete remains pending unless separately documented.
 
 ## 2. Scope, goals, and non-goals
 
@@ -68,8 +72,10 @@ Still pending or not proven:
 - Distance-targeted persisted-point sampling: first valid point, then both at least 1 second and at least 10 meters from the last persisted point.
 - User-selectable movement type: Walk, Run, Bike, Car, Train.
 - Optional private note for a capture.
-- Local track library with movement filtering, date/distance sorting, automatic refresh when Tracks is selected, Settings-level rescan, live-row projection, and malformed-file rows.
-- OpenStreetMap/osmdroid map display for selected and live tracks.
+- Local track library with movement filtering, date/distance sorting, automatic refresh when Tracks is selected, Settings-level rescan, live-row projection, malformed-file rows, read-only Preview, and long-press Actions.
+- OpenStreetMap/osmdroid map display for multiple explicitly displayed saved/live tracks.
+- Eligible non-live track message edit with GPX metadata update and filename rename.
+- Eligible non-live track delete, including safe malformed-row delete where storage identity allows.
 - Android Settings-style Settings surface for Capture, Tracks, Map, and Storage/App info defaults.
 - Settings-only All files access recovery path for existing `.gpx` files after app data clear/reinstall when scoped storage cannot rediscover them.
 - JVM unit tests for domain logic, GPX codec, storage constants, recovery planner, settings, and state projections.
@@ -78,8 +84,8 @@ Still pending or not proven:
 
 - No fleet tracking, social tracking, or live safety sharing.
 - No accounts, authentication, cloud API, server, PostgreSQL, or remote sync.
-- No delete-track action.
-- No metadata editing after capture.
+- No bulk delete, delete all, trash/archive recovery, or undo system.
+- No metadata editing after capture except message-only edits on eligible non-live tracks.
 - No broad advanced GPS/sampling tuning UI.
 - No configurable persisted-point sampling rule; Settings must not expose the 1-second/10-meter persistence rule.
 - No boot receiver, no auto-start, no auto-resume, and no silent continuation after process death.
@@ -112,7 +118,7 @@ Still pending or not proven:
 
 ### 3.2 Notable dependency state
 
-Approved/used dependencies include Compose Material 3, Google Play Services Location, osmdroid, and AndroidX support libraries. `androidx.documentfile` remains in dependency metadata from an earlier SAF recovery attempt, but current normal storage uses MediaStore and current recovery uses direct read-only scan behind All files access.
+Approved/used dependencies include Compose Material 3, Google Play Services Location, osmdroid, and AndroidX support libraries. `androidx.documentfile` remains in dependency metadata from an earlier SAF recovery attempt, but current normal storage uses MediaStore and current recovery uses direct scan behind All files access.
 
 Do not add, remove, or upgrade dependencies without explicit approval.
 
@@ -161,7 +167,7 @@ Architectural boundaries:
 | `LocationProvider` | Stable boundary for consuming Android or test location sources. |
 | `GooglePlayServicesLocationProvider` | Production FLP adapter that requests high-accuracy location updates. |
 | `CaptureForegroundService` | Long-running capture owner, foreground notification, location update subscription, callback bridge into repository, `START_NOT_STICKY` lifecycle. |
-| `AndroidTrackStorage` | Public GPX MediaStore writes/listing, direct read-only recovery scan, URI/file reads, app-private active journal. |
+| `AndroidTrackStorage` | Public GPX MediaStore writes/listing, direct recovery scan, eligible direct-file edit/delete, URI/file reads, app-private active journal. |
 | `GpxCodec` | GPX 1.1 serialization/deserialization, XML safety, StrideMap extension metadata. |
 
 ### 4.3 State model
@@ -170,7 +176,7 @@ The app state should expose at least:
 
 - Setup readiness and blockers.
 - Current live track, if any.
-- Selected track for Map.
+- Session-only displayed-track identities for Map.
 - Scanned GPX entries and malformed rows.
 - Display entries that merge scanned entries with the active live track without duplication.
 - Current Settings values.
@@ -263,7 +269,7 @@ Start must be blocked unless all required conditions pass:
 - Foreground service can legally start.
 - No existing live track blocks the one-live invariant.
 
-All files access recovery permission is not a Start blocker. It only affects optional read-only rediscovery of existing public `.gpx` files after app data clear/reinstall.
+All files access recovery permission is not a Start blocker. It only affects optional rediscovery of existing public `.gpx` files after app data clear/reinstall and eligible direct-file edit/delete Actions.
 
 ### 6.2 Permission UX
 
@@ -482,14 +488,14 @@ Rationale: after app data clear on Samsung S23, older `.gpx` files could remain 
 
 Current approved recovery behavior:
 
-- Manifest declares `MANAGE_EXTERNAL_STORAGE` only for a Settings-driven recovery path.
+- Manifest declares `MANAGE_EXTERNAL_STORAGE` only for a Settings-driven recovery path and eligible direct-file track edit/delete Actions.
 - Settings → Storage/App info exposes `Recover existing tracks`.
 - The action opens Android's All files access settings page for StrideMap when possible, with fallback to the general page.
-- When `Environment.isExternalStorageManager()` is true, rescans include read-only `.gpx` files from `/storage/emulated/0/Documents/StrideMap/Tracks/*.gpx`.
+- When `Environment.isExternalStorageManager()` is true, rescans include `.gpx` files from `/storage/emulated/0/Documents/StrideMap/Tracks/*.gpx`.
 - Direct recovery uses case-insensitive `.gpx` filtering.
-- Recovered file refs are read-only in StrideMap.
-- Direct recovery should scan regular files only, sort deterministically, map refs as read-only `file:` references, and read recovered files as UTF-8.
-- Direct recovery must not mutate recovered files.
+- Direct recovery should scan regular files only, sort deterministically, map refs as `file:` references, and read recovered files as UTF-8.
+- Recovered direct-file refs may support edit/delete only when All files access is currently granted, storage identity is constrained to the StrideMap track folder, and the operation can use the safe direct-file contract. Otherwise, fail non-destructively and keep the row visible.
+- Direct recovery must not mutate recovered files except through explicit eligible edit/delete Actions.
 - All files access is not required for normal capture and must not be added as a Start blocker.
 
 ### 8.6 Filename convention
@@ -523,7 +529,7 @@ Current behavior requires or declares:
 - `FOREGROUND_SERVICE_LOCATION`.
 - `POST_NOTIFICATIONS` where required.
 - `INTERNET` for online OSM/osmdroid tiles.
-- `MANAGE_EXTERNAL_STORAGE` only for Settings-driven read-only GPX recovery.
+- `MANAGE_EXTERNAL_STORAGE` only for Settings-driven GPX recovery and eligible direct-file track edit/delete Actions.
 
 Do not add legacy `READ_EXTERNAL_STORAGE`, `WRITE_EXTERNAL_STORAGE`, or `READ_MEDIA_*` for normal GPX capture unless a future spec explicitly changes storage strategy.
 
@@ -630,16 +636,28 @@ Implemented/required behavior:
 - The Tracks tab currently has no visible refresh FAB/button; entering the tab triggers a non-destructive track scan. Manual rescan remains available from Settings → Storage/App info.
 - Valid track rows show message or fallback label, date/time, duration where available, distance, movement badge, and state chip when live/interrupted.
 - Malformed GPX files appear as safe error rows/details and are not silently ignored.
-- Tapping a valid track selects it and navigates to Map.
-- Tapping malformed rows does not navigate to Map.
-- No delete/edit action exists in v1.
+- Short press/tap on a valid track opens read-only Preview metadata and does not change Map display.
+- Short press/tap on a malformed row opens read-only Preview/error details and does not navigate to Map.
+- Long press on a row opens compact Actions.
+- `Display` is an Actions-only toggle for valid live, stopped, and interrupted tracks.
+- `Edit message` and `Delete` are Actions for eligible non-live valid tracks.
+- Malformed rows support Delete only when storage identity allows a safe delete.
 - Track scanning must tolerate GPX files being added, removed, or modified outside the app.
-- If the selected file disappears externally, clear selection and show a non-fatal message.
+- If a displayed/referenced file disappears externally, clear stale display state and show a non-fatal message.
 - Refresh during recording must not blank existing rows, duplicate the live row, or treat transient public-write state as fatal.
+
+Preview shows available parsed/storage metadata such as message/fallback title, movement type, state, start/latest time, duration, distance, point count, filename/storage reference, and malformed parse details where applicable. Preview never contains Actions and never mutates displayed-track state.
+
+Actions behavior:
+
+- Display-selected state is session-only and is not restored after app restart.
+- Live tracks are not displayed automatically; the live track appears on Map only when explicitly Display-selected.
+- Delete is permanent after confirmation; success removes the row and clears related displayed-track state, while failure shows a non-fatal snackbar and leaves the row visible.
+- Edit message opens a dialog, allows an empty message, rewrites GPX message metadata, renames the GPX file to match the new message slug/fallback naming convention, migrates displayed-track identity, and preserves route geometry, points, movement type, timestamps, duration, distance, and track state.
 
 ### 10.5 Map screen
 
-Map is the selected/live route viewer using osmdroid/OpenStreetMap.
+Map is the multi-track route viewer using osmdroid/OpenStreetMap.
 
 Implemented/required behavior:
 
@@ -648,20 +666,22 @@ Implemented/required behavior:
 - Forward lifecycle events to `MapView` and detach on dispose.
 - Keep OSM attribution visible.
 - Use online MAPNIK tiles by default.
-- Show Material empty state when no selected/live track exists.
-- Map empty state should include actions to start capture and open Tracks when practical.
-- The selected/live track info overlay appears at the top center with status-bar padding.
-- The Map overlay is intentionally one line: movement type, local date/time, distance, and tracked time. It must not display the custom capture note/message unless explicitly re-approved.
-- Live-map actions such as `Show live` and `Follow live location` appear bottom-right.
+- Show Material hint/empty state when no tracks are Display-selected.
+- Map empty state should guide the user to select `Display` from Tracks when practical.
+- Render all currently Display-selected valid tracks.
+- Displayed-track selection is session-only and separate from Preview state.
 - Pinch zoom remains enabled; osmdroid built-in plus/minus zoom controls are hidden.
 - Show waiting state for live zero-point capture.
-- Render selected/live track route line using movement color plus high-contrast casing for multi-point routes.
+- Render route lines with high-contrast casing for multi-point routes.
+- Saved tracks use unique per-session route colors; live uses a distinct live style.
 - Render start/end/latest-live markers with distinct meaning beyond color alone.
 - Optionally render intermediate saved-point dots according to Settings.
 - Handle one-point and degenerate tracks without invalid bounds/zoom crashes.
-- Auto-zoom selected non-live tracks to route bounds.
-- Follow live latest point until user pans/zooms; provide Follow action to resume.
-- Map display priority: if the user explicitly selected a stored track, show that track even while recording continues. If no stored track is selected and a live track exists, show the live track. Provide a simple way to return to the live track while recording, or explicitly document the current behavior.
+- Auto-fit all displayed tracks when entering the Map tab; later Display changes while already on Map must not yank/refit the viewport.
+- Tapping a displayed route or marker shows compact route info with a matching color swatch, movement type, local date/time, distance, and tracked time. Dismiss on map/route tap or explicit close.
+- Live follow is available only when the live track is Display-selected. Follow latest live point until user pans/zooms; provide Follow action to resume.
+- Do not add a displayed-tracks legend/list overlay or manual `Fit displayed` button in current v1.
+- Do not impose a hard displayed-track count cap; if many displayed tracks degrade performance/readability, warn non-blockingly rather than auto-hiding tracks.
 - Avoid unsafe `zoomToBoundingBox` calls during Compose update; viewport updates should be guarded, posted after layout, non-animated where necessary, and de-duplicated.
 
 ### 10.6 Settings
@@ -751,7 +771,7 @@ The app distinguishes:
 
 Core continuous capture must block rather than silently degrade for precise/background/foreground-service requirements.
 
-`MANAGE_EXTERNAL_STORAGE` is policy-sensitive and approved only for this personal/development Settings-driven recovery flow. It must not be generalized into normal storage strategy, delete/edit support, sync import, or Start readiness without explicit product approval.
+`MANAGE_EXTERNAL_STORAGE` is policy-sensitive and approved only for this personal/development Settings-driven recovery flow and eligible direct-file edit/delete Actions for recovered tracks. It must not be generalized into normal storage strategy, sync import, or Start readiness without explicit product approval.
 
 ### 12.3 Storage and GPX errors
 
@@ -759,7 +779,7 @@ Core continuous capture must block rather than silently degrade for precise/back
 - Public write failure during live capture should interrupt/discard according to point count.
 - Parser failures should create safe malformed rows.
 - Malformed rows should not expose full private paths or raw route contents.
-- Direct recovery files are read-only; recovery should not mutate existing files unless a future spec explicitly approves it.
+- Recovered direct-file tracks should remain non-mutating except through explicit eligible edit/delete Actions when All files access and safe storage identity allow.
 
 ### 12.4 Privacy constraints
 
@@ -781,6 +801,7 @@ JVM unit tests should cover and currently include coverage for:
 - Live elapsed time vs route duration.
 - Filename sanitization and collision behavior.
 - Track ordering and display projections.
+- Session-only displayed-track state, including multiple saved tracks, explicit live display, malformed/missing-id filtering, rename migration, and delete cleanup.
 - GPX writer/parser round trips.
 - GPX namespace/schema fields.
 - GPX point extensions and elevation omission/order.
@@ -826,11 +847,18 @@ Use 600-second timeouts for normal Gradle test/build shell runs unless a task sp
 | Stop one-point duration persistence | Unit tests + rescan manual check | Implemented and tested |
 | Live foreground notification | Emulator notification check + real-device check | Emulator checked; real capture pending |
 | MediaStore public GPX write | Unit storage constants + manual device/file visibility | Implemented; full visibility validation pending |
-| All files recovery read-only scan | Unit constants + SGS23 user confirmation | Implemented and confirmed |
+| All files recovery scan | Unit constants + SGS23 user confirmation | Implemented and confirmed for recovery scan |
 | Stale live recovery | Unit recovery tests + process-kill manual test | Unit-tested; process-kill pending |
 | Tracks malformed rows | GPX parser tests + manual invalid file | Unit-tested; manual optional |
 | Tracks filter/sort | Unit ordering + manual UI | Implemented |
 | Tracks auto-refresh on tab selection | Code inspection + manual tab navigation | Implemented; user accepted final tab/header arrangement |
+| Tracks Preview vs Actions | Manual UI validation | Implemented intent; structured manual validation pending |
+| Display toggle is session-only and Actions-only | AppState tests + manual UI validation | State unit-tested; manual UI pending |
+| Multiple tracks can display on Map | AppState tests + manual Map validation | State unit-tested; manual Map pending |
+| Live track is not automatic on Map | AppState tests + active-capture manual validation | State unit-tested; manual active-capture pending |
+| Edit message rewrites GPX metadata and renames file | Code/storage validation + manual rescan validation | Implemented; structured validation pending |
+| Delete removes eligible non-live track and display state | AppState cleanup test + storage/manual validation | State unit-tested; structured storage/manual validation pending |
+| Malformed row Preview and safe Delete | GPX parser tests + manual malformed-file validation | Parser safety tested; delete validation pending |
 | Map degenerate routes | Unit/helper + manual map checks | Implemented after emulator freeze fix |
 | Map one-line top overlay excludes custom message | Unit test for overlay text helper + manual UI | Implemented and tested |
 | Live map follow | Manual route validation | Implemented; real-route validation pending |
@@ -844,7 +872,7 @@ Use 600-second timeouts for normal Gradle test/build shell runs unless a task sp
 - Product tab name is `Tracks`; internal enum naming may still say `List`.
 - Source package remains `com.example.stridemap`; install/application id is `app.stridemap.personal`.
 - `DocumentFile` dependency remains from a superseded SAF recovery path; current behavior does not rely on SAF for recovery.
-- `MANAGE_EXTERNAL_STORAGE` is an approved exception only for Settings-driven recovery. It must not become normal capture storage or a Start blocker.
+- `MANAGE_EXTERNAL_STORAGE` is an approved exception only for Settings-driven recovery and eligible direct-file edit/delete Actions. It must not become normal capture storage or a Start blocker.
 - Provider polling is movement/settings-based, but current default interval is 1000ms for all movement types.
 - Saved-point sampling remains non-configurable and separate from provider polling.
 - A `ForegroundServiceUnavailable` blocker concept exists in design/code context, but current UI may treat background recording readiness as effectively static until failure paths surface errors.

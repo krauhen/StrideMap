@@ -100,6 +100,18 @@ class CoreDomainTest {
     }
 
     @Test
+    fun editedFilenameUsesOriginalTimestampMovementSanitizedMessageAndCollisionSuffix() {
+        val base = TrackFilename.buildBaseName(t0, MovementType.Walk, "Evening / café loop!!!")
+
+        assertEquals("2026-06-08_15-30-04Z_walk_evening-cafe-loo.gpx", base)
+        assertEquals(
+            "2026-06-08_15-30-04Z_walk_evening-cafe-loo-3.gpx",
+            TrackFilename.uniqueName(base) { it == base || it.endsWith("-2.gpx") },
+        )
+        assertEquals("2026-06-08_15-30-04Z_walk.gpx", TrackFilename.buildBaseName(t0, MovementType.Walk, " "))
+    }
+
+    @Test
     fun trackOrderingFiltersMovementAndKeepsLiveRowsFirst() {
         val oldWalk = track("old.gpx", MovementType.Walk, TrackState.Stopped, t0)
         val newWalk = track("new.gpx", MovementType.Walk, TrackState.Stopped, t0.plusSeconds(60))

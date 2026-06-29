@@ -82,12 +82,13 @@ class AppStateTest {
     }
 
     @Test
-    fun displayEntriesIncludesLiveTrackImmediately() {
+    fun displayEntriesIncludesLiveTrackInTracksListOnly() {
         val live = track("live.gpx", TrackState.Live)
 
         val state = AppState(liveTrack = live)
 
         assertEquals(listOf(ParsedTrackEntry.Valid(live)), state.displayEntries)
+        assertTrue(state.displayedTracks.isEmpty())
     }
 
     @Test
@@ -103,6 +104,90 @@ class AppStateTest {
 
         assertEquals(listOf(ParsedTrackEntry.Valid(currentLive), ParsedTrackEntry.Valid(stopped)), state.displayEntries)
         assertTrue(state.displayEntries.filterIsInstance<ParsedTrackEntry.Valid>().count { it.track.id == currentLive.id } == 1)
+    }
+
+    @Test
+    fun displayedTracksAreExplicitAndCanIncludeMultipleSavedTracks() {
+        val first = track("first.gpx", TrackState.Stopped)
+        val second = track("second.gpx", TrackState.Interrupted)
+        val hidden = track("hidden.gpx", TrackState.Stopped)
+
+        val state = AppState(
+            entries = listOf(ParsedTrackEntry.Valid(first), ParsedTrackEntry.Valid(second), ParsedTrackEntry.Valid(hidden)),
+            displayedTrackIds = setOf(first.id, second.id),
+        )
+
+        assertEquals(listOf(first, second), state.displayedTracks)
+    }
+
+    @Test
+    fun displayedTracksCanExplicitlyIncludeLiveTrackButLiveIsNotAutomatic() {
+        val live = track("live.gpx", TrackState.Live)
+
+        val hiddenState = AppState(liveTrack = live)
+        val displayedState = AppState(liveTrack = live, displayedTrackIds = setOf(live.id))
+
+        assertTrue(hiddenState.displayedTracks.isEmpty())
+        assertEquals(listOf(live), displayedState.displayedTracks)
+    }
+
+    @Test
+    fun displayedTracksIgnoreMalformedAndMissingIds() {
+        val displayed = track("displayed.gpx", TrackState.Stopped)
+        val malformed = ParsedTrackEntry.Malformed(com.example.stridemap.core.MalformedTrack("bad.gpx", com.example.stridemap.core.ParseErrorCategory.InvalidXml, "Invalid GPX"))
+
+        val state = AppState(
+            entries = listOf(ParsedTrackEntry.Valid(displayed), malformed),
+            displayedTrackIds = setOf(displayed.id, "bad.gpx", "missing.gpx"),
+        )
+
+        assertEquals(listOf(displayed), state.displayedTracks)
+    }
+
+    @Test
+    fun upsertValidTrackReplacesLiveEntryWithInterruptedTrackForDisplayedRouteContinuity() {
+        val live = track("live.gpx", TrackState.Live, message = "recording")
+        val interrupted = live.copy(state = TrackState.Interrupted, message = "interrupted")
+
+        val entries = listOf(ParsedTrackEntry.Valid(live)).upsertValidTrack(interrupted)
+        val state = AppState(entries = entries, displayedTrackIds = setOf(interrupted.id))
+
+        assertEquals(listOf(ParsedTrackEntry.Valid(interrupted)), entries)
+        assertEquals(listOf(interrupted), state.displayedTracks)
+    }
+
+    @Test
+    fun replacingTrackAfterRenameMigratesDisplayStateAndRemovesOldEntry() {
+        val old = track("old-name.gpx", TrackState.Stopped, message = "old")
+        val renamed = old.copy(id = "new-name.gpx", fileName = "new-name.gpx", message = "new")
+        val other = track("other.gpx", TrackState.Stopped)
+        val state = AppState(
+            entries = listOf(ParsedTrackEntry.Valid(old), ParsedTrackEntry.Valid(other)),
+            displayedTrackIds = setOf(old.id, other.id),
+        )
+
+        val updated = state.replaceTrackAfterRename(old.id, renamed)
+
+        assertEquals(listOf(renamed, other), updated.displayEntries.filterIsInstance<ParsedTrackEntry.Valid>().map { it.track })
+        assertEquals(setOf(renamed.id, other.id), updated.displayedTrackIds)
+        assertEquals(listOf(renamed, other), updated.displayedTracks)
+    }
+
+    @Test
+    fun removingTrackCleansDisplayStateWithoutTouchingUnrelatedRows() {
+        val deleted = track("delete-me.gpx", TrackState.Stopped)
+        val kept = track("keep-me.gpx", TrackState.Interrupted)
+        val malformed = ParsedTrackEntry.Malformed(com.example.stridemap.core.MalformedTrack("bad.gpx", com.example.stridemap.core.ParseErrorCategory.InvalidXml, "Invalid GPX"))
+        val state = AppState(
+            entries = listOf(ParsedTrackEntry.Valid(deleted), ParsedTrackEntry.Valid(kept), malformed),
+            displayedTrackIds = setOf(deleted.id, kept.id),
+        )
+
+        val updated = state.removeTrack(deleted.id)
+
+        assertEquals(listOf(ParsedTrackEntry.Valid(kept), malformed), updated.entries)
+        assertEquals(setOf(kept.id), updated.displayedTrackIds)
+        assertEquals(listOf(kept), updated.displayedTracks)
     }
 
     private fun track(fileName: String, state: TrackState, message: String = ""): Track = Track(
