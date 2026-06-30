@@ -6,20 +6,7 @@ It captures real routes, saves user-accessible GPX files under `Documents/Stride
 
 ## Screenshots
 
-<table>
-  <tr>
-    <td><img src="data/screenshots/capture_v1.0.jpg" alt="Capture screen" /></td>
-    <td><img src="data/screenshots/tracks_v1.0.jpg" alt="Tracks screen" /></td>
-    <td><img src="data/screenshots/map_v1.0.jpg" alt="Map screen" /></td>
-    <td><img src="data/screenshots/map_v1.1.jpg" alt="Map screen with selected track" /></td>
-  </tr>
-  <tr>
-    <td><img src="data/screenshots/tracks_v1.2.jpg" alt="Tracks screen with elevation stats" /></td>
-    <td><img src="data/screenshots/map_v1.2_elevation.jpg" alt="Map elevation profile" /></td>
-    <td><img src="data/screenshots/map_v1.2_height_change.jpg" alt="Map height change profile" /></td>
-    <td><img src="data/screenshots/map_v1.2_speed.jpg" alt="Map speed profile" /></td>
-  </tr>
-</table>
+![StrideMap screenshots](data/screenshots/stridemap_v1.2_screenshots_grid.jpg)
 
 ## Features
 
